@@ -59,15 +59,37 @@ st.markdown("""
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(url, key)
+import streamlit as st
 
-# הוסף את זה אחרי ה-hebrew_days בקוד שלך
-TRAINING_PROTOCOL = """
-חוקי ברזל של המאמן:
-1. עומס: אל תעלה מרחק שבועי ביותר מ-10% מהשבוע הקודם.
-2. אינטרוולים: בצע אותם בטווח של 90-95% מדופק סף (LTHR).
-3. התאוששות: אם HRV יורד ב-20% מהממוצע השבועי, או דופק מנוחה עולה ב-10 פעימות - חובה להעביר לאימון התאוששות.
-4. מגמות: התייחס לכל אימון כחלק ממחזור (Macrocycle).
-"""
+# ... כאן מופיע קוד האתחול של supabase (create_client וכו') ...
+
+st.title("מאמן הריצה האישי שלך")
+
+# יצירת לשוניות
+# יצירת לשוניות
+tab1, tab2 = st.tabs(["התחברות", "הרשמה"])
+
+with tab1:
+    email_in = st.text_input("אימייל", key="login_email")
+    password_in = st.text_input("סיסמה", type="password", key="login_pass")
+    if st.button("התחבר"):
+        try:
+            response = supabase.auth.sign_in_with_password({"email": email_in, "password": password_in})
+            st.session_state.user = response.user
+            st.success("התחברת בהצלחה! מרענן את הדף...")
+            st.rerun()
+        except Exception as e:
+            st.error(f"שגיאה בהתחברות: {e}")
+
+with tab2:
+    email_up = st.text_input("אימייל", key="signup_email")
+    password_up = st.text_input("סיסמה", type="password", key="signup_pass")
+    if st.button("הירשם"):
+        try:
+            response = supabase.auth.sign_up({"email": email_up, "password": password_up})
+            st.success("נרשמת בהצלחה! בדוק את המייל שלך לאישור.")
+        except Exception as e:
+            st.error(f"שגיאה בהרשמה: {e}")
 
 # --- ניהול מצב ---
 if "user" not in st.session_state: st.session_state.user = None
