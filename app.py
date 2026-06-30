@@ -67,29 +67,42 @@ st.title("מאמן הריצה האישי שלך")
 
 # יצירת לשוניות
 # יצירת לשוניות
-tab1, tab2 = st.tabs(["התחברות", "הרשמה"])
-with tab1:
-    email_in = st.text_input("אימייל", key="login_email")
-    password_in = st.text_input("סיסמה", type="password", key="login_pass")
-    if st.button("התחבר", key="btn_login"):  # הוספנו key ייחודי
-        try:
-            response = supabase.auth.sign_in_with_password({"email": email_in, "password": password_in})
-            st.session_state.user = response.user
-            st.success("התחברת בהצלחה!")
-            st.rerun()
-        except Exception as e:
-            st.error(f"שגיאה בהתחברות: {e}")
+# --- לוגיקת אימות משתמש ---
+if "user" not in st.session_state:
+    st.title("מאמן הריצה האישי שלך")
+    
+    # הלשוניות יופיעו רק כשלא מחוברים
+    tab1, tab2 = st.tabs(["התחברות", "הרשמה"])
+    
+    with tab1:
+        email_in = st.text_input("אימייל", key="login_email")
+        password_in = st.text_input("סיסמה", type="password", key="login_pass")
+        if st.button("התחבר", key="btn_login"):
+            try:
+                response = supabase.auth.sign_in_with_password({"email": email_in, "password": password_in})
+                st.session_state.user = response.user
+                st.success("התחברת!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"שגיאה: {e}")
 
-with tab2:
-    email_up = st.text_input("אימייל", key="signup_email")
-    password_up = st.text_input("סיסמה", type="password", key="signup_pass")
-    if st.button("הירשם", key="btn_signup"):  # הוספנו key ייחודי
-        try:
-            response = supabase.auth.sign_up({"email": email_up, "password": password_up})
-            st.success("נרשמת בהצלחה! בדוק את המייל שלך לאישור.")
-        except Exception as e:
-            st.error(f"שגיאה בהרשמה: {e}")
+    with tab2:
+        email_up = st.text_input("אימייל", key="signup_email")
+        password_up = st.text_input("סיסמה", type="password", key="signup_pass")
+        if st.button("הירשם", key="btn_signup"):
+            try:
+                response = supabase.auth.sign_up({"email": email_up, "password": password_up})
+                st.success("נרשמת! בדוק את המייל שלך לאישור.")
+            except Exception as e:
+                st.error(f"שגיאה: {e}")
 
+else:
+    # --- כל שאר האפליקציה שלך נכנסת כאן (ה-else) ---
+    st.title("AI Running Coach")
+    # כאן אתה שם את כל הקוד של הצ'אט, הנתונים והגרפים שכתבת קודם
+    if st.button("התנתק"):
+        st.session_state.user = None
+        st.rerun()
 # --- ניהול מצב ---
 if "user" not in st.session_state: st.session_state.user = None
 if "profile_data" not in st.session_state: st.session_state.profile_data = {}
