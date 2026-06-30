@@ -68,15 +68,14 @@ st.title("מאמן הריצה האישי שלך")
 # יצירת לשוניות
 # יצירת לשוניות
 tab1, tab2 = st.tabs(["התחברות", "הרשמה"])
-
 with tab1:
     email_in = st.text_input("אימייל", key="login_email")
     password_in = st.text_input("סיסמה", type="password", key="login_pass")
-    if st.button("התחבר"):
+    if st.button("התחבר", key="btn_login"):  # הוספנו key ייחודי
         try:
             response = supabase.auth.sign_in_with_password({"email": email_in, "password": password_in})
             st.session_state.user = response.user
-            st.success("התחברת בהצלחה! מרענן את הדף...")
+            st.success("התחברת בהצלחה!")
             st.rerun()
         except Exception as e:
             st.error(f"שגיאה בהתחברות: {e}")
@@ -84,7 +83,7 @@ with tab1:
 with tab2:
     email_up = st.text_input("אימייל", key="signup_email")
     password_up = st.text_input("סיסמה", type="password", key="signup_pass")
-    if st.button("הירשם"):
+    if st.button("הירשם", key="btn_signup"):  # הוספנו key ייחודי
         try:
             response = supabase.auth.sign_up({"email": email_up, "password": password_up})
             st.success("נרשמת בהצלחה! בדוק את המייל שלך לאישור.")
