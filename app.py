@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted
 from garminconnect import Garmin
 import datetime
 import json
@@ -119,6 +120,35 @@ TRAINING_PROTOCOL = """
 - חוקי אזהרה: HRV נמוך משמעותית מהממוצע, דופק מנוחה גבוה, או תחושה מתחת ל-4/10 - הפוך את האימון המתוכנן לקל או למנוחה.
 """
 
+# הפורמט המדויק שהאפליקציה מצפה לקבל כשהיא מבקשת "תוכנית JSON" -
+# בלי הגדרה מפורשת של השדות, המודל נוטה להחזיר JSON חלקי/לא תקין,
+# ואז כל הימים נופלים לברירת המחדל "מנוחה" בלוח (התצוגה לא מוצאת title).
+WEEKLY_PLAN_JSON_FORMAT = f"""
+כשאתה בונה או מעדכן תוכנית שבועית, החזר בלוק קוד יחיד בפורמט הבא (ואל תוסיף שום טקסט אחר בתוך הבלוק):
+
+```json
+{{
+  "יום ראשון": {{"title": "...", "goal": "...", "steps": ["..."], "paces": "..."}},
+  "יום שני": {{"title": "...", "goal": "...", "steps": ["..."], "paces": "..."}},
+  "יום שלישי": {{"title": "...", "goal": "...", "steps": ["..."], "paces": "..."}},
+  "יום רביעי": {{"title": "...", "goal": "...", "steps": ["..."], "paces": "..."}},
+  "יום חמישי": {{"title": "...", "goal": "...", "steps": ["..."], "paces": "..."}},
+  "יום שישי": {{"title": "...", "goal": "...", "steps": ["..."], "paces": "..."}},
+  "יום שבת": {{"title": "...", "goal": "...", "steps": ["..."], "paces": "..."}}
+}}
+```
+
+כללי חובה לפורמט הזה:
+1. המפתחות (keys) חייבים להיות בדיוק שבעת השמות האלו, באיות זהה: {hebrew_days}. אסור להחסיר יום.
+2. תכנן שבוע אימונים אמיתי לפי פרוטוקול העבודה - בדרך כלל 5-6 ימי אימון ורק 1-2 ימי מנוחה. אסור לסמן את כל השבוע (או רובו) כ"מנוחה" אלא אם המשתמש בשחיקה ברורה לפי הנתונים - ואז תסביר בטקסט למה.
+3. עבור כל יום שאינו מנוחה, ה-title חייב לציין את סוג האימון בפירוש (למשל "ריצה קלה", "אינטרוולים", "ריצת סף", "כוח") - זה מה שקובע את האייקון והצבע בלוח.
+4. steps חייב לכלול מרחק/זמן/חזרות קונקרטיים לכל שלב (למשל "2 ק\"מ חימום קל", "5x800 מ' בקצב סף עם 2 דק' מנוחה בין חזרות", "20 דקות שחרור"). אל תכתוב שלבים גנריים בלי מספרים.
+5. paces חייב לכלול קצב או טווח דופק קונקרטי (למשל "5:30-5:45 דק/ק\"מ" או "דופק 140-150") ולא "לפי תחושה" - אלא אם זה אכן אימון שחרור חופשי לגמרי.
+6. יום מנוחה אמיתי - עדיין תחזיר עבורו אובייקט עם title: "מנוחה" (לא תשמיט את היום).
+7. אסור לעטוף את שבעת הימים בתוך מפתח נוסף (כמו "weekly_plan" או כל מפתח אחר) - האובייקט ברמה העליונה בתוך הבלוק חייב להיות ישירות שבעת הימים כמפתחות, ושום דבר אחר (לא weekly_volume_target_km, לא coaching_notes וכו').
+8. אסור להשתמש בשמות ימים באנגלית (Sunday/Monday/...) ואסור להוסיף תאריך למפתח (כמו "Friday_2026-07-10") - רק שמות הימים בעברית, באיות זהה בדיוק לרשימה שבסעיף 1.
+"""
+
 # --- פונקציות עזר ---
 def load_user_profile(user_id):
     try:
@@ -143,15 +173,28 @@ def build_daily_status():
     log = st.session_state.latest_log
     today = datetime.datetime.utcnow().date().isoformat()
     if not log or str(log.get("created_at", ""))[:10] != today:
-        return "המשתמש עדיין לא מילא עדכון בוקר היום."
+        return f"תאריך היום: {today}. המשתמש עדיין לא מילא עדכון בוקר היום ({today})."
     fields = [("דופק מנוחה", "rhr"), ("HRV", "hrv"), ("שינה", "sleep_score"),
               ("סוללת גוף", "body_battery"), ("תחושה", "feeling")]
     parts = [f"{label}: {log.get(key) if log.get(key) is not None else 'לא סופק'}" for label, key in fields]
-    return "עדכון בוקר בוצע היום. " + ", ".join(parts)
+    return f"תאריך היום: {today}. עדכון בוקר בוצע היום ({today}). " + ", ".join(parts)
+
+class _CoachResponse:
+    """עטיפה פשוטה כדי שגם הודעות שגיאה יתנהגו כמו תשובת AI רגילה (עם .text)."""
+    def __init__(self, text):
+        self.text = text
 
 def coach_send(message_text):
     full_message = f"[מצב יומי: {build_daily_status()}]\n{message_text}"
-    return st.session_state.chat_session.send_message(full_message)
+    try:
+        return st.session_state.chat_session.send_message(full_message)
+    except ResourceExhausted:
+        return _CoachResponse(
+            "Coach Leo תופס נשימה 😅 חרגת מהמכסה החינמית של גוגל ל-Gemini לרגע זה. "
+            "נסה שוב בעוד דקה."
+        )
+    except Exception as e:
+        return _CoachResponse(f"שגיאה בתקשורת עם המאמן: {e}")
 
 # --- ייבוא היסטוריית ריצות מקובץ CSV של גרמין ---
 # הכותרות בקובץ ה-Export של Garmin Connect משתנות בין גרסאות/שפות/סוגי אימון,
@@ -290,18 +333,55 @@ def fetch_recent_garmin_activities(garmin_email, garmin_password):
     except Exception as e:
         return f"שגיאת סנכרון: {e}"
 
+# לפעמים המודל לא מציית לפורמט המבוקש בול - עוטף את הימים במפתח "weekly_plan" נוסף,
+# או משתמש בשמות ימים באנגלית (לפעמים עם תאריך בסוף, כמו "Friday_2026-07-10").
+# הלוח מציג "מנוחה" לכל יום שהמפתח שלו לא תואם בדיוק ל-hebrew_days, אז זה חייב
+# להיות עמיד ולא לסמוך אך ורק על ציות המודל להנחיה.
+_ENGLISH_DAY_TO_HEBREW = {
+    "sunday": "יום ראשון", "monday": "יום שני", "tuesday": "יום שלישי",
+    "wednesday": "יום רביעי", "thursday": "יום חמישי", "friday": "יום שישי", "saturday": "יום שבת",
+}
+
+def _normalize_weekly_plan(raw_plan):
+    if not isinstance(raw_plan, dict):
+        return {}
+    # עטיפה כמו {"weekly_plan": {...הימים...}, "weekly_volume_target_km": ...} - נפרוס אותה
+    if isinstance(raw_plan.get("weekly_plan"), dict):
+        raw_plan = raw_plan["weekly_plan"]
+
+    normalized = {}
+    for key, val in raw_plan.items():
+        if not isinstance(val, dict):
+            continue
+        if key in hebrew_days:
+            normalized[key] = val
+            continue
+        base = re.split(r"[_ ]", key, maxsplit=1)[0].strip().lower()
+        hebrew_key = _ENGLISH_DAY_TO_HEBREW.get(base)
+        if hebrew_key:
+            normalized[hebrew_key] = val
+    return normalized
+
 # פונקציה שמחלצת JSON מהתשובה של ה-AI ומעדכנת את הלוח
 def process_ai_response_for_plan(response_text):
-    json_match = re.search(r'```json\n(.*?)\n```', response_text, re.DOTALL)
+    # regex סלחני יותר לגבי רווחים/שורות ריקות סביב הגדר - כדי שלא ניפול על
+    # "כמעט תואם" ונתעלם משקט מתוכנית שלמה שהמודל כן החזיר.
+    json_match = re.search(r'```json\s*(.*?)```', response_text, re.DOTALL | re.IGNORECASE)
     if json_match:
         try:
-            new_plan = json.loads(json_match.group(1))
+            new_plan = _normalize_weekly_plan(json.loads(json_match.group(1).strip()))
+            if not new_plan:
+                st.warning("לא הצלחתי לזהות ימי אימון בתוכנית שהמאמן החזיר - נסה לבקש תוכנית שוב.")
+                return response_text
+            missing_days = [d for d in hebrew_days if d not in new_plan]
+            if missing_days:
+                st.warning(f"התוכנית שהמאמן החזיר חסרה ימים: {', '.join(missing_days)}. הימים החסרים יוצגו כמנוחה.")
             user_prefs = json.loads(st.session_state.profile_data.get("workout_preferences", "{}"))
             user_prefs["weekly_plan"] = new_plan
             supabase.table("profiles").update({"workout_preferences": json.dumps(user_prefs)}).eq("id", st.session_state.user.id).execute()
             st.session_state.profile_data["workout_preferences"] = json.dumps(user_prefs)
 
-            clean_text = re.sub(r'```json\n.*?\n```', '', response_text, flags=re.DOTALL).strip()
+            clean_text = re.sub(r'```json\s*.*?```', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
             st.toast("📅 המאמן עדכן את לוח האימונים בהצלחה!")
             return clean_text
         except Exception as e:
@@ -346,8 +426,8 @@ def init_chat_session():
     system_instruction = f"""
     אתה מאמן ריצה עילית בעל ניסיון של 20 שנה.
     פרוטוקול עבודה: {TRAINING_PROTOCOL}
+    פורמט תוכנית שבועית: {WEEKLY_PLAN_JSON_FORMAT}
     מגמות מתאמן: {trend_msg}
-    נתוני היום: {st.session_state.latest_log}
     היסטוריית ריצות: {run_history_summary}
 
     חוקי עבודה:
@@ -356,8 +436,11 @@ def init_chat_session():
     3. תמיד נמק את ה-JSON שאתה בונה לפי חוקי הברזל.
     4. כברירת מחדל ענה בקצרה ותכל'ס - כמה משפטים ישירים, בלי הרחבות מיותרות (למעט כשאתה בונה תוכנית אימונים מפורטת).
     5. אם המשתמש מבקש ממך מפורשות אורך תשובה אחר (למשל "תענה לי קצר יותר" או "תרחיב בבקשה") - זכור את ההעדפה הזו לכל אורך השיחה ופעל לפיה, עד שתקבל הנחיה חדשה.
+    6. כל הודעה שתקבל ממני תיפתח בתגית "מצב יומי" עם התאריך הנוכחי ועדכון הבוקר של אותו תאריך בלבד - זה המקור היחיד והעדכני לנתוני "היום". אם היא אומרת שלא מולא עדכון בוקר היום, זה נכון גם אם בהודעות קודמות בשיחה (אולי מיום אחר) הופיעו נתוני בוקר - אל תשתמש בהם כאילו הם של היום, ואל תניח שהיום זהה לתאריך של ההודעה הקודמת. במקרה כזה, תגיד למשתמש בפירוש שהוא צריך למלא עדכון בוקר חדש להיום לפני שתוכל לתת ניתוח מבוסס-נתונים (אפשר עדיין לשוחח כללית, אבל לא "לזייף" שיש נתוני בוקר).
     """
-    model = genai.GenerativeModel(model_name='gemini-flash-latest', system_instruction=system_instruction)
+    # מוצמד לגרסה יציבה (לא "-latest") - כדי לא ליפול על מודל preview חדש
+    # עם מכסת חינם זעירה (ראינו 5 בקשות/דקה בלבד על gemini-flash-latest)
+    model = genai.GenerativeModel(model_name='gemini-2.5-flash', system_instruction=system_instruction)
     st.session_state.chat_session = model.start_chat(history=[])
 
 # --- כניסה ---
@@ -477,7 +560,11 @@ with tab_morning:
 with tab_calendar:
     if st.button("🤖 בקש מהמאמן תוכנית חדשה לשבוע הקרוב"):
         with st.spinner("המאמן מנתח שיאים וקצבים ובונה תוכנית..."):
-            resp = coach_send("בנה לי תוכנית מפורטת לשבוע הקרוב מבוססת על המבדקים שלי. החזר רק JSON כמוסכם.")
+            resp = coach_send(
+                "בנה לי תוכנית מפורטת לשבוע הקרוב מבוססת על המבדקים שלי - שבעת הימים, "
+                "עם ימי אימון אמיתיים (לא רק מנוחה) לפי הפורמט שהוגדר לך. "
+                "החזר את בלוק ה-JSON לפי הפורמט המדויק, עם title/goal/steps/paces קונקרטיים לכל יום."
+            )
             process_ai_response_for_plan(resp.text)
             st.rerun()
 
