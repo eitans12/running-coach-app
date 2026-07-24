@@ -166,18 +166,43 @@ def load_latest_coach_log(user_id):
         st.session_state.latest_log = {}
         st.warning(f"לא ניתן היה לטעון את יומן האימון האחרון: {e}")
 
+def get_latest_garmin_summary():
+    # last_run_summary נשמר רק על השורה של אותו עדכון בוקר, ולא בהכרח באחרונה
+    # שבה log.get("created_at") הוא היום - לכן סורקים כמה שורות אחרונות ומוצאים
+    # את הראשונה עם סיכום ריצות בפועל, בלי קשר לתאריך עדכון הבוקר האחרון.
+    try:
+        res = (supabase.table("coach_logs")
+               .select("last_run_summary, created_at")
+               .eq("user_id", st.session_state.user.id)
+               .order("id", desc=True)
+               .limit(10)
+               .execute())
+        for row in (res.data or []):
+            if row.get("last_run_summary"):
+                return row
+    except Exception:
+        pass
+    return None
+
 def build_daily_status():
     # תמיד נשלף מחדש מה-DB (ולא מ-session_state המקומי) כדי שריענון דף / התנתקות מחדש
     # לא "ישכחו" עדכון בוקר שכבר בוצע היום.
     load_latest_coach_log(st.session_state.user.id)
     log = st.session_state.latest_log
     today = datetime.datetime.utcnow().date().isoformat()
+
+    run_row = get_latest_garmin_summary()
+    run_part = ""
+    if run_row:
+        run_date = str(run_row.get("created_at", ""))[:10]
+        run_part = f" אימונים אחרונים שסונכרנו מגרמין (בתאריך {run_date}): {run_row['last_run_summary']}"
+
     if not log or str(log.get("created_at", ""))[:10] != today:
-        return f"תאריך היום: {today}. המשתמש עדיין לא מילא עדכון בוקר היום ({today})."
+        return f"תאריך היום: {today}. המשתמש עדיין לא מילא עדכון בוקר היום ({today}).{run_part}"
     fields = [("דופק מנוחה", "rhr"), ("HRV", "hrv"), ("שינה", "sleep_score"),
               ("סוללת גוף", "body_battery"), ("תחושה", "feeling")]
     parts = [f"{label}: {log.get(key) if log.get(key) is not None else 'לא סופק'}" for label, key in fields]
-    return f"תאריך היום: {today}. עדכון בוקר בוצע היום ({today}). " + ", ".join(parts)
+    return f"תאריך היום: {today}. עדכון בוקר בוצע היום ({today}). " + ", ".join(parts) + run_part
 
 class _CoachResponse:
     """עטיפה פשוטה כדי שגם הודעות שגיאה יתנהגו כמו תשובת AI רגילה (עם .text)."""
@@ -326,7 +351,7 @@ def fetch_recent_garmin_activities(garmin_email, garmin_password):
                 name = act.get('activityName', 'אימון')
                 dist = act.get('distance', 0) / 1000
                 dur = act.get('duration', 0) / 60
-                hr = act.get('averageHeartRateInBeatsPerMinute', 'N/A')
+                hr = act.get('averageHR', 'N/A')
                 history.append(f"{name}: {dist:.2f} ק״מ ב-{dur:.1f} דק' | דופק ממוצע: {hr}")
             return "\n".join(history)
         return "לא נמצאו אימונים לאחרונה."
