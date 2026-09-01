@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client, Client
-import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted
-from garminconnect import Garmin
+from google import genai
+from google.genai import types
+from google.genai.errors import ClientError
+from garminconnect import Garmin, GarminConnectTooManyRequestsError
+import time
 import datetime
 import json
 import re
@@ -14,82 +16,275 @@ st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&display=swap');
 
+    :root {
+        color-scheme: light;
+        --background: #FAF8F5;
+        --foreground: #1F1A14;
+        --card: #FFFFFF;
+        --card-foreground: #1F1A14;
+        --popover: #FFFFFF;
+        --popover-foreground: #1F1A14;
+        --primary: #8F5024;
+        --primary-foreground: #FAF8F5;
+        --secondary: #F0ECE6;
+        --secondary-foreground: #3D3329;
+        --muted: #F3F1ED;
+        --muted-foreground: #8C8073;
+        --accent: #DDB43C;
+        --accent-foreground: #1F1A14;
+        --border-soft: rgba(31,26,20,0.08);
+        --border-strong: rgba(31,26,20,0.18);
+        --shadow-sm: 0 1px 2px rgba(31,26,20,0.06), 0 1px 1px rgba(31,26,20,0.04);
+        --shadow-md: 0 4px 14px rgba(31,26,20,0.08);
+        --success: #3F7D4F;
+        --warning: #C97A2B;
+        --danger: #B94A3C;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        :root {
+            color-scheme: dark;
+            --background: #17130F;
+            --foreground: #F3EDE3;
+            --card: #221C16;
+            --card-foreground: #F3EDE3;
+            --popover: #221C16;
+            --popover-foreground: #F3EDE3;
+            --primary: #E1A868;
+            --primary-foreground: #1F1A14;
+            --secondary: #2C241C;
+            --secondary-foreground: #EAE1D4;
+            --muted: #26201A;
+            --muted-foreground: #A99C8B;
+            --accent: #E8C566;
+            --accent-foreground: #1F1A14;
+            --border-soft: rgba(255,247,235,0.08);
+            --border-strong: rgba(255,247,235,0.16);
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.35), 0 1px 1px rgba(0,0,0,0.25);
+            --shadow-md: 0 6px 20px rgba(0,0,0,0.4);
+            --success: #6FCB86;
+            --warning: #E3A458;
+            --danger: #E38070;
+        }
+    }
+
     html, body, [class*="css"], .stApp, .stMarkdown, p, span, div, button, input, textarea, label {
         font-family: 'Rubik', 'Segoe UI', Arial, sans-serif !important;
     }
 
+    [data-testid="stIconMaterial"], [data-testid="stIconEmoji"], .material-symbols-outlined, .material-symbols-rounded {
+        font-family: 'Material Symbols Rounded', 'Material Icons' !important;
+    }
+
+    .stApp {
+        background: radial-gradient(1200px 600px at 15% -10%, rgba(221,180,60,0.08), transparent 60%),
+                    radial-gradient(1000px 500px at 100% 0%, rgba(143,80,36,0.06), transparent 55%),
+                    var(--background) !important;
+    }
+
     h1, h2, h3 {
-        color: #F8F9FA !important;
+        color: var(--foreground) !important;
         font-weight: 700 !important;
         letter-spacing: -0.02em;
     }
-    p, span, label, .stMarkdown, .stCaption { color: #E8EAED; }
+
+    /* מכולת תוכן ראשית - קריאות טובה יותר במסכים רחבים */
+    .block-container {
+        max-width: 900px !important;
+        padding-top: 2rem !important;
+    }
+
+    /* כרטיס בסיס לשימוש כללי */
+    .app-card {
+        background-color: var(--card);
+        border: 1px solid var(--border-soft);
+        border-radius: 16px;
+        padding: 18px 20px;
+        box-shadow: var(--shadow-sm);
+        margin-bottom: 12px;
+        transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+    }
+    .app-card:hover { box-shadow: var(--shadow-md); border-color: var(--border-strong); }
 
     /* כותרת מאמן */
     .coach-header {
         display: flex; align-items: center; gap: 12px;
-        padding-bottom: 16px; margin-bottom: 16px;
-        border-bottom: 1px solid rgba(255,255,255,0.08);
+        padding: 14px 18px; margin-bottom: 18px;
+        background: linear-gradient(135deg, rgba(143,80,36,0.10), rgba(221,180,60,0.10));
+        border: 1px solid var(--border-soft);
+        border-radius: 16px;
     }
     .coach-avatar {
-        width: 46px; height: 46px; border-radius: 50%;
-        background: #24272C; border: 2px solid #FF5A3C;
+        width: 48px; height: 48px; border-radius: 50%;
+        background: var(--secondary); border: 2px solid var(--primary);
+        box-shadow: var(--shadow-sm);
     }
-    .coach-name { font-weight: 700; font-size: 17px; color: #F8F9FA; }
-    .coach-status { font-size: 12px; color: #3DDC97; font-weight: 500; }
+    .coach-name { font-weight: 700; font-size: 17px; color: var(--foreground); }
+    .coach-status { font-size: 12px; color: var(--primary); font-weight: 600; display: flex; align-items: center; gap: 5px; }
+    .coach-status::before {
+        content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+        background: var(--success); box-shadow: 0 0 0 3px rgba(63,125,79,0.18);
+    }
 
-    /* בועות צ'אט */
+    /* בועות שיחה */
     .user-msg {
-        background: linear-gradient(135deg, #FF5A3C, #FF8A3C) !important;
-        color: #ffffff !important;
-        padding: 10px 16px; border-radius: 18px 18px 4px 18px;
-        max-width: 75%; font-size: 15px; line-height: 1.5;
-        box-shadow: 0 2px 8px rgba(255,90,60,0.25);
+        background: linear-gradient(135deg, var(--primary), var(--accent)) !important;
+        color: var(--primary-foreground) !important;
+        padding: 11px 17px; border-radius: 18px 18px 4px 18px;
+        max-width: 75%; font-size: 15px; line-height: 1.55;
+        box-shadow: 0 3px 10px rgba(143,80,36,0.28);
+        margin-bottom: 4px;
     }
     .ai-msg {
-        background-color: #1A1D22 !important;
-        color: #F2F3F5 !important;
-        border: 1px solid rgba(255,255,255,0.08) !important;
-        padding: 10px 16px; border-radius: 18px 18px 18px 4px;
-        max-width: 75%; font-size: 15px; line-height: 1.5;
+        background-color: var(--card) !important;
+        color: var(--card-foreground) !important;
+        border: 1px solid var(--border-soft) !important;
+        padding: 11px 17px; border-radius: 18px 18px 18px 4px;
+        max-width: 75%; font-size: 15px; line-height: 1.55;
+        box-shadow: var(--shadow-sm);
+        margin-bottom: 4px;
     }
 
-    /* כרטיסי לוח אימונים */
+    /* כרטיסי יומן/אימונים */
     .calendar-card {
-        background-color: #16181C;
-        border: 1px solid rgba(255,255,255,0.06);
+        background-color: var(--card);
+        border: 1px solid var(--border-soft);
         border-radius: 14px;
         padding: 14px 18px;
         margin-bottom: 10px;
         display: flex; align-items: center; gap: 14px;
-        transition: border-color 0.15s ease;
+        box-shadow: var(--shadow-sm);
+        transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
     }
-    .calendar-card:hover { border-color: rgba(255,255,255,0.16); }
+    .calendar-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
     .card-badge {
         width: 42px; height: 42px; min-width: 42px;
         border-radius: 50%;
         display: flex; align-items: center; justify-content: center;
         font-size: 19px;
     }
-    .calendar-card.card-run .card-badge { background: rgba(255,90,60,0.15); }
-    .calendar-card.card-cross .card-badge { background: rgba(61,220,151,0.15); }
-    .calendar-card.card-rest .card-badge { background: rgba(255,255,255,0.06); }
+    .calendar-card.card-run .card-badge { background: rgba(143,80,36,0.15); }
+    .calendar-card.card-cross .card-badge { background: rgba(221,180,60,0.25); }
+    .calendar-card.card-rest .card-badge { background: var(--muted); }
 
-    .day-title { color: #9AA0A8 !important; font-size: 13px; font-weight: 500; }
-    .workout-type { color: #F8F9FA !important; font-size: 15.5px; font-weight: 600; }
+    /* הדגשת אימון היום */
+    .calendar-card.card-today {
+        border: 2px solid var(--primary);
+        box-shadow: 0 0 0 3px rgba(143,80,36,0.14), var(--shadow-md);
+    }
+    .today-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, var(--primary), var(--accent));
+        color: var(--primary-foreground);
+        font-size: 10px; font-weight: 700;
+        padding: 2px 9px;
+        border-radius: 999px;
+        letter-spacing: 0.02em;
+    }
+
+    .day-title { color: var(--muted-foreground) !important; font-size: 13px; font-weight: 500; }
+    .workout-type { color: var(--foreground) !important; font-size: 15.5px; font-weight: 600; }
 
     /* טאבים */
-    [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid rgba(255,255,255,0.08); }
-    [data-baseweb="tab"] { font-weight: 600; }
-    [data-baseweb="tab-highlight"] { background-color: #FF5A3C !important; }
+    [data-baseweb="tab-list"] { gap: 6px; border-bottom: 1px solid var(--border-soft); }
+    [data-baseweb="tab"] { font-weight: 600; border-radius: 10px 10px 0 0 !important; padding: 8px 4px !important; }
+    [data-baseweb="tab-highlight"] { background-color: var(--primary) !important; height: 3px !important; border-radius: 3px; }
+    [aria-selected="true"] { color: var(--primary) !important; }
 
     /* כפתורים */
     .stButton > button, .stFormSubmitButton > button {
-        border-radius: 10px !important;
+        border-radius: 12px !important;
         font-weight: 600 !important;
+        padding: 0.65rem 1.6rem !important;
+        font-size: 16px !important;
+        transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease, background 0.12s ease;
     }
+    /* Primary CTA buttons: st.button(..., type="primary") */
+    .stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primaryFormSubmit"], .stFormSubmitButton > button[kind="primary"] {
+        background: linear-gradient(135deg, var(--primary), #A6642F) !important;
+        color: var(--primary-foreground) !important;
+        border: 1px solid var(--primary) !important;
+        box-shadow: var(--shadow-sm);
+        padding: 0.7rem 1.75rem !important;
+    }
+    .stButton > button[kind="primary"]:hover, .stFormSubmitButton > button[kind="primaryFormSubmit"]:hover, .stFormSubmitButton > button[kind="primary"]:hover {
+        filter: brightness(1.06);
+        box-shadow: var(--shadow-md);
+        transform: translateY(-1px);
+    }
+    .stButton > button[kind="primary"]:active, .stFormSubmitButton > button[kind="primaryFormSubmit"]:active, .stFormSubmitButton > button[kind="primary"]:active { transform: translateY(0); }
+    /* Secondary / utility buttons: default type, lighter outline style */
+    .stButton > button[kind="secondary"], .stFormSubmitButton > button[kind="secondaryFormSubmit"], .stFormSubmitButton > button[kind="secondary"] {
+        background: var(--secondary) !important;
+        color: var(--secondary-foreground) !important;
+        border: 1px solid var(--border-soft, var(--secondary)) !important;
+        box-shadow: none !important;
+        font-weight: 500 !important;
+    }
+    .stButton > button[kind="secondary"]:hover, .stFormSubmitButton > button[kind="secondaryFormSubmit"]:hover, .stFormSubmitButton > button[kind="secondary"]:hover {
+        filter: brightness(0.97);
+        box-shadow: var(--shadow-sm);
+        transform: translateY(-1px);
+    }
+    .stButton > button[kind="secondary"]:active, .stFormSubmitButton > button[kind="secondaryFormSubmit"]:active, .stFormSubmitButton > button[kind="secondary"]:active { transform: translateY(0); }
+
+    /* שדות קלט */
+    .stTextInput input, .stTextArea textarea, .stNumberInput input, .stDateInput input {
+        border-radius: 10px !important;
+        border: 1px solid var(--border-soft) !important;
+        background-color: var(--card) !important;
+        color: var(--foreground) !important;
+    }
+    .stTextInput input:focus, .stTextArea textarea:focus, .stNumberInput input:focus {
+        border-color: var(--primary) !important;
+        box-shadow: 0 0 0 3px rgba(143,80,36,0.15) !important;
+    }
+    [data-baseweb="select"] > div {
+        border-radius: 10px !important;
+        border-color: var(--border-soft) !important;
+        background-color: var(--card) !important;
+    }
+
+    /* מדדים (st.metric) */
+    [data-testid="stMetric"] {
+        background-color: var(--card);
+        border: 1px solid var(--border-soft);
+        border-radius: 14px;
+        padding: 12px 16px;
+        box-shadow: var(--shadow-sm);
+    }
+    [data-testid="stMetricValue"] { color: var(--primary) !important; font-weight: 700 !important; }
+    [data-testid="stMetricLabel"] { color: var(--muted-foreground) !important; }
+
+    /* פרוגרס בר */
+    .stProgress > div > div > div { background: linear-gradient(90deg, var(--primary), var(--accent)) !important; }
+    .stProgress > div > div { background-color: var(--muted) !important; border-radius: 999px; }
+
+    /* סרגל צד */
+    section[data-testid="stSidebar"] {
+        background-color: var(--secondary) !important;
+        border-inline-end: 1px solid var(--border-soft);
+    }
+    section[data-testid="stSidebar"] .stButton > button {
+        background: var(--card) !important;
+        color: var(--foreground) !important;
+        border: 1px solid var(--border-soft) !important;
+    }
+
+    /* אקספנדר */
+    [data-testid="stExpander"] {
+        border: 1px solid var(--border-soft) !important;
+        border-radius: 12px !important;
+        background-color: var(--card) !important;
+        box-shadow: var(--shadow-sm);
+    }
+
+    /* גלילה עדינה */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
+    ::-webkit-scrollbar-track { background: transparent; }
     </style>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
 # --- התחברות למסד הנתונים ---
 url = st.secrets["SUPABASE_URL"]
@@ -112,6 +307,60 @@ if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_session" not in st.session_state: st.session_state.chat_session = None
 
 hebrew_days = ['יום ראשון', 'יום שני', 'יום שלישי', 'יום רביעי', 'יום חמישי', 'יום שישי', 'יום שבת']
+
+KNOWLEDGE_BASE = """
+מאגר ידע מקצועי - אתה מאמן ריצה בעל ידע רחב ומעודכן, מבוסס על מדע האימונים והספרות המקצועית העדכנית בעולם הריצה. השתמש בידע הזה כדי לתת עצות מבוססות ומדויקות, לא רק תגובות גנריות.
+
+### פיזיולוגיה ומדעי האימון
+- VO2max: הקיבולת האירובית המקסימלית. משתפר ע"י אינטרוולים בעצימות גבוהה (Z4/Z5), אך גם דורש בסיס אירובי רחב לפני כן.
+- סף אנאירובי (Lactate Threshold): הקצב הגבוה ביותר שניתן לשמר לאורך זמן בלי הצטברות חומצת חלב מוגזמת. אימוני טמפו (20-40 דקות בקצב סף) משפרים אותו.
+- כלכלת ריצה (Running Economy): כמות החמצן הנדרשת בקצב נתון. משתפרת ע"י ריצות בקצב מרוץ, עבודת עוצמה (plyometrics), ותדירות צעד (cadence) גבוהה יחסית (בד"כ 170-185 צעד/דקה).
+- אימון מקוטב (Polarized / 80-20): כ-80% מנפח האימונים בעצימות נמוכה (Z1-Z2, קצב שיחה נוחה), וכ-20% בעצימות גבוהה (סף ומעלה). מונע שחיקה ותורם להתקדמות ארוכת טווח.
+- פריודיזציה: חלוקת התוכנית לשלבים - בסיס (נפח, אירובי) - בנייה (איכות, סף/VO2max) - שיא (ספציפי למרוץ) - הפחתה/טייפר (ירידת נפח, שמירת עצימות, לפני התחרות).
+- אזורי דופק: Z1 החלמה (כ-50-60% מהדופק המקסימלי), Z2 אירובי בסיס (60-70%), Z3 סף אירובי (70-80%), Z4 סף אנאירובי (80-90%), Z5 VO2max/אנאירובי (90-100%).
+- כלל ה-10%: לא להעלות נפח שבועי ביותר מ-10% משבוע לשבוע, כדי למנוע פציעות עומס-יתר.
+
+### מניעת פציעות וביומכניקה
+- פציעות נפוצות: תסמונת ה-IT Band (כאב חיצוני בברך), "ברך הרץ" (Runner's Knee / PFPS), דלקת גיד אכילס, פאשיטיס פלנטרי (כאב בעקב/כף הרגל בבוקר), שברי מאמץ (stress fractures), דלקת פריאוסט (shin splints).
+- יחס עומס חריף-כרוני (ACWR): היחס בין העומס בשבוע האחרון לממוצע 4 השבועות האחרונים. יחס מעל כ-1.5 מעלה משמעותית סיכון לפציעה.
+- אימוני כוח: חיזוק ישבן (glutes), core, ויציבות חד-רגלית מפחיתים פציעות ברכיים וירכיים. מומלץ כ-2 פעמים בשבוע.
+- טכניקת ריצה: נחיתה קרובה למרכז הכובד (לא overstriding), תדירות צעד גבוהה יחסית, יציבה זקופה עם נטייה קלה קדימה מהקרסוליים.
+- החלמה: שינה איכותית (7-9 שעות), ימי מנוחה/החלמה אקטיבית, לא להתעלם מכאב חד שמחמיר תוך כדי ריצה - זה סימן אזהרה לעצור.
+
+### תזונה ותדלוק
+- תדלוק למרוץ ארוך (חצי/מרתון): כ-30-60 גרם פחמימות לשעה במהלך המרוץ, ותמיד לתרגל את התדלוק באימונים מראש ולא ביום המרוץ עצמו.
+- טעינת פחמימות (carb loading): 2-3 ימים לפני מרתון, הגברת צריכת פחמימות לכ-8-10 גרם/ק"ג משקל גוף ליום.
+- הידרציה: לשתות לפי צמא ולשים לב לנתרן במיוחד במרחקים ארוכים ובחום. שתייה עודפת (hyponatremia) מסוכנת לא פחות מהתייבשות.
+- תזונת יומיום לרץ: פחמימות מספקות לתדלוק אימונים, חלבון לשיקום שריר (כ-1.2-1.6 גרם/ק"ג), ותשומת לב לברזל וויטמין D שנפוצים בחוסר אצל ספורטאי סיבולת.
+
+### שיטות אימון מוכרות בעולם
+- ג'ק דניאלס (Jack Daniels / VDOT): שיטה מבוססת על מדד VDOT (מחושב מתוצאת מרוץ) לחישוב קצבי אימון מדויקים (Easy, Marathon, Threshold, Interval, Repetition).
+- פיצינגר (Pfitzinger): תוכניות מרתון עם דגש כבד על ריצות בקצב סף (LT runs) ונפח גבוה יחסית.
+- Hanson's Marathon Method: מבוסס על "עייפות מצטברת" - ריצות איכות תכופות, וריצה ארוכה מוגבלת לכ-25-26 ק"מ כדי לדמות עייפות סוף מרתון בלי צורך בהחלמה ארוכה.
+- ליידיארד (Lydiard): בניית בסיס אירובי רחב לפני מעבר לעבודת מהירות/אנאירובית - מקסימום נפח אירובי בר-קיימא.
+- רנאטו קנובה (Renato Canova): שיטות ספציפיות לרמת עילית, כולל "בלוקים מיוחדים" שמדמים בדיוק את דרישות המרוץ.
+
+השתמש בידע הזה כבסיס המקצועי שלך, אך תמיד התאם אותו למידע האישי, לרמת הכושר ולמטרות של המשתמש הספציפי - אל תיתן עצות גנריות שמתעלמות מהנתונים שכבר יש לך עליו.
+
+### עדכונים ממחקר עדכני ומאמני ריצה מובילים (כולל תוכן מיוטיוב ומחקרים חדשים)
+- אימון Zone 2 בפועל: החישוב המדויק הוא לפי HRR (Heart Rate Reserve) - (דופק מקסימלי פחות דופק מנוחה) * 60%-70% ועוד דופק מנוחה. קצב השיחה בד"כ איטי ב-1.5-3 דקות לק"מ מקצב 5 ק"מ. רצים עילית מבלים כ-60-75% מהנפח השבועי שלהם ב-Zone 2 - זו לא "ריצה מבוזבזת" אלא הבסיס שמאפשר את האימונים הקשים.
+- טעות נפוצה (מגמת "Zone 2 בלבד"): להתמקד רק ב-Zone 2 ולהתעלם מאימוני איכות (Zone 3-5) מוביל לקיפאון בביצועים - שיפור שיא אישי דורש שילוב של שני הקצוות (אימון מקוטב), לא רק בסיס איטי.
+- פרוטוקול נורווגי 4x4 (שיטה מוכחת לשיפור VO2max): 4 חזרות של 4 דקות ב-90-95% מהדופק המקסימלי, עם 3 דקות החלמה פעילה ב-60-70% מהדופק המקסימלי בין החזרות, לאחר חימום של כ-10 דקות. מומלץ 2-3 פעמים בשבוע עם לפחות 48 שעות מנוחה בין אימונים. מחקרים (NTNU) מראים שיפור של כ-7-10% ב-VO2max תוך 8 שבועות.
+- נעליים עם פלטת קרבון: מחקרים וסקירות שיטתיות (2025-2026) מראים שיפור ממוצע של כ-2-3% בכלכלת הריצה (טווח כ-1% עד 4.5% בהתאם למדידה), במיוחד ככל שהקצב עולה והמרחק מתארך. זה יתרון משמעותי אך לא קסם - טכניקה, נפח אימונים והתאמה אישית עדיין המרכיבים הכי חשובים.
+
+השתמש בעדכונים האלו כדי לתת תשובות עדכניות ומדויקות, אבל תמיד תוך שילוב עם הבסיס המקצועי הקבוע שלך ועם הנתונים האישיים של המשתמש.
+
+### בחירת נעלי ריצה
+- ה"מסנן הנוחות" (Comfort Filter - מחקר של Nigg ואחרים, BJSM 2015): הגישה המסורתית שממליצה על נעל לפי סוג כף רגל/פרונציה (שטוחה מול קשת גבוהה) לא הוכחה כמפחיתה פציעות בפועל. הפרדיגמה העדכנית: לכל רץ יש "נתיב תנועה מועדף" טבעי, והנעל הכי נוחה מיידית לרץ הספציפי היא לרוב הבחירה הבטוחה ביותר - יותר מאבחון פרונציה חד-פעמי בחנות.
+- סוגי נעליים: ניטרליות (מתאימות לרוב הרצים), יציבות/סטביליטי (עבור רצים שחווים אי-נוחות הקשורה לתנועה מוגזמת של כף הרגל פנימה), ומוטו-קונטרול (למקרים קיצוניים בלבד). ההמלצה המודרנית - לבחור בעיקר לפי תחושת נוחות אישית בזמן ניסוי, ולא רק לפי "אבחון" תיאורטי.
+- כרית (cushioning): רצים מנוסים ומהירים נוטים להעדיף כרית מתונה יותר לתחושת קרקע וקצב תגובה טוב יותר; מתחילים ורצים כבדים יותר לרוב נהנים מכרית גבוהה יותר לספיגת זעזועים. יותר כרית לא תמיד עדיף - זה תלוי בסגנון ריצה ובמטרות.
+- מדד ה-Drop (הפרש גובה בין עקב לכף): נע בד"כ בין 0 מ"מ (זירו-דרופ/מינימליסטי) ל-12 מ"מ. דרופ נמוך מעודד נחיתה על אמצע/קדמת כף הרגל; דרופ גבוה יותר נוח יותר לנחיתת עקב. מעבר לדרופ שונה מהרגיל צריך להיעשות בהדרגה כדי למנוע פציעות עומס על גיד אכילס ושריר השוק.
+- התאמה (fit): רווח של כרוחב אגודל בין האצבע הארוכה לקצה הנעל, עקב יציב שלא מחליק, בלי לחץ באמצע כף הרגל, ומספיק מקום לאצבעות. נעל טובה אמורה להרגיש נוחה כבר בניסיון הראשון - בלי צורך ב"תקופת הרגלה" ארוכה.
+- החלפת נעליים: בד"כ כל 300-500 מייל (כ-480-800 ק"מ), בהתאם למשקל הרץ, נפח האימונים וסוג הנעל. סימנים להחלפה: כאבים חדשים שמופיעים בריצות מוכרות, שחיקה לא אחידה בסוליה, או קריסה/שיטוח של המידסול.
+- רוטציית נעליים: מחקר (Malisoux ואחרים, 2015, כתב עת סקנדינבי לרפואת ספורט, 264 רצים למשך 22 שבועות) מצא סיכון פציעה נמוך ב-39% אצל רצים שהחליפו בין כמה זוגות נעליים לעומת שימוש בזוג יחיד קבוע. הסיבה: כל נעל יוצרת עומס ביומכני מעט שונה על השרירים והרקמות, וגם לקצף (foam) יש צורך בכ-24-48 שעות "התאוששות" בין ריצות. מומלץ במיוחד לרצים שמתאמנים 4 פעמים בשבוע ומעלה - למשל נעל יומיומית רכה יותר לצד נעל קלה למרוץ/אימוני איכות.
+- התאמה לסביבה: נעלי כביש שונות מנעלי שטח (טרייל) - נעלי טרייל מציעות אחיזה טובה יותר על קרקע לא אחידה והגנה מפני אבנים, אך פחות מתאימות לריצה ממושכת על אספלט.
+- מסקנה מעשית לרץ: אל תבחר נעל רק לפי מותג או "אבחון פרונציה" חד-פעמי בחנות - תן משקל רב לתחושת הנוחות המיידית בניסיון, למטרת השימוש (אימון יומיומי מול מרוץ מהיר), ולשילוב של כמה זוגות שונים בשגרה השבועית.
+"""
 
 TRAINING_PROTOCOL = """
 עקרונות מדעיים לבניית תוכנית ריצה - השתמש בהם בפועל בכל תוכנית, לא רק כרקע כללי:
@@ -228,13 +477,28 @@ def build_daily_status():
     # לא "ישכחו" עדכון בוקר שכבר בוצע היום.
     load_latest_coach_log(st.session_state.user.id)
     log = st.session_state.latest_log
-    today = datetime.datetime.utcnow().date().isoformat()
-
+    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     run_row = get_latest_garmin_summary()
     run_part = ""
     if run_row:
         run_date = str(run_row.get("created_at", ""))[:10]
-        run_part = f" אימונים אחרונים שסונכרנו מגרמין (בתאריך {run_date}): {run_row['last_run_summary']}"
+        run_signature = f"{run_row.get('created_at', '')}|{str(run_row.get('last_run_summary', ''))[:80]}"
+        is_repeat_pull = st.session_state.get("last_seen_run_signature") == run_signature
+        st.session_state["last_seen_run_signature"] = run_signature
+        try:
+            days_since_run = (datetime.date.fromisoformat(today) - datetime.date.fromisoformat(run_date)).days
+        except Exception:
+            days_since_run = None
+        if days_since_run is None:
+            recency_note = ""
+        elif days_since_run <= 0:
+            recency_note = "(היום - שים לב: יש לך רק את התאריך, לא את השעה המדויקת. אל תניח ואל תכתוב שהאימון \"הסתיים ממש עכשיו\" או \"לפני זמן קצר\" - ייתכן שהוא התקיים מוקדם יותר היום)"
+        elif days_since_run == 1:
+            recency_note = "(אתמול)"
+        else:
+            recency_note = f"(שים לב: לפני {days_since_run} ימים - זה לא עדכני!)"
+        repeat_note = " [שים לב: זהו בדיוק אותו אימון שכבר נמסר לך קודם בשיחה הזו - אין אימון חדש מאז, אל תתייחס אליו כאילו קרה עכשיו ואל תברך שוב על סיומו כאילו הוא חדש]" if is_repeat_pull else ""
+        run_part = f" מידע ריצה אחרון שנרשם בתאריך {run_date} {recency_note}{repeat_note} (היום הוא {today}): {run_row['last_run_summary']}"
 
     if not log or str(log.get("created_at", ""))[:10] != today:
         return f"תאריך היום: {today}. המשתמש עדיין לא מילא עדכון בוקר היום ({today}).{run_part}"
@@ -252,10 +516,11 @@ def coach_send(message_text):
     full_message = f"[מצב יומי: {build_daily_status()}]\n{message_text}"
     try:
         return st.session_state.chat_session.send_message(full_message)
-    except ResourceExhausted:
+    except ClientError as e:
+        if getattr(e, "code", None) != 429:
+            raise
         return _CoachResponse(
-            "Coach Leo תופס נשימה 😅 חרגת מהמכסה החינמית של גוגל ל-Gemini לרגע זה. "
-            "נסה שוב בעוד דקה."
+            "Coach Leo 😅 חרגת מהמכסה החינמית של גוגל ל-Gemini. נסה שוב בעוד דקה."
         )
     except Exception as e:
         return _CoachResponse(f"שגיאה בתקשורת עם המאמן: {e}")
@@ -421,23 +686,31 @@ def build_physio_zones_summary(user_id):
 
 def fetch_recent_garmin_activities(garmin_email, garmin_password):
     if not garmin_email or not garmin_password:
-        return "לא מחובר לגרמין."
-    try:
-        client = Garmin(garmin_email, garmin_password)
-        client.login()
-        activities = client.get_activities(0, 3)
-        if activities:
-            history = []
-            for act in activities:
-                name = act.get('activityName', 'אימון')
-                dist = act.get('distance', 0) / 1000
-                dur = act.get('duration', 0) / 60
-                hr = act.get('averageHR', 'N/A')
-                history.append(f"{name}: {dist:.2f} ק״מ ב-{dur:.1f} דק' | דופק ממוצע: {hr}")
-            return "\n".join(history)
-        return "לא נמצאו אימונים לאחרונה."
-    except Exception as e:
-        return f"שגיאת סנכרון: {e}"
+        return "לא חובר לגרמין."
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            client = Garmin(garmin_email, garmin_password)
+            client.login()
+            activities = client.get_activities(0, 3)
+            if activities:
+                history = []
+                for act in activities:
+                    name = act.get('activityName', 'אימון')
+                    dist = act.get('distance', 0) / 1000
+                    dur = act.get('duration', 0) / 60
+                    hr = act.get('averageHR', 'N/A')
+                    history.append(f"{name}: {dist:.2f} ק\"מ ב-{dur:.1f} דק | דופק ממוצע: {hr}")
+                return "\n".join(history)
+            return "לא נמצאו אימונים לאחרונה."
+        except GarminConnectTooManyRequestsError:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            return "גרמין חסם זמנית בקשות מעומס (429). נסה שוב בעוד כמה דקות."
+        except Exception as e:
+            return f"שגיאה: {e}"
+
 
 # לפעמים המודל לא מציית לפורמט המבוקש בול - עוטף את הימים במפתח "weekly_plan" נוסף,
 # או משתמש בשמות ימים באנגלית (לפעמים עם תאריך בסוף, כמו "Friday_2026-07-10").
@@ -517,8 +790,9 @@ def push_to_garmin(workout_name, day_ai_plan, profile):
         return False
 
 # --- הגדרת המאמן ---
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-
+@st.cache_resource
+def _get_genai_client():
+    return genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 def init_chat_session():
     # חישוב מגמה מהירה מתוך ה-coach_logs (ה-7 האחרונים)
     logs = supabase.table("coach_logs").select("*").eq("user_id", st.session_state.user.id).order("id", desc=True).limit(7).execute().data
@@ -533,6 +807,7 @@ def init_chat_session():
     system_instruction = f"""
     אתה מאמן ריצה עילית בעל ניסיון של 20 שנה, בקיא בפיזיולוגיה של אימון סיבולת.
     פרוטוקול עבודה: {TRAINING_PROTOCOL}
+    מאגר ידע מקצועי: {KNOWLEDGE_BASE}
     פרוטוקול פענוח נתוני בוקר (readiness): {READINESS_PROTOCOL}
     פורמט תוכנית שבועית: {WEEKLY_PLAN_JSON_FORMAT}
     מגמות מתאמן: {trend_msg}
@@ -550,8 +825,8 @@ def init_chat_session():
     """
     # מוצמד לגרסה יציבה (לא "-latest") - כדי לא ליפול על מודל preview חדש
     # עם מכסת חינם זעירה (ראינו 5 בקשות/דקה בלבד על gemini-flash-latest)
-    model = genai.GenerativeModel(model_name='gemini-2.5-flash', system_instruction=system_instruction)
-    st.session_state.chat_session = model.start_chat(history=[])
+    client = _get_genai_client()
+    st.session_state.chat_session = client.chats.create(model='gemini-2.5-flash', config=types.GenerateContentConfig(system_instruction=system_instruction))
 
 # --- כניסה ---
 if st.session_state.user is None:
@@ -561,7 +836,7 @@ if st.session_state.user is None:
     with tab1:
         email_in = st.text_input("אימייל", key="login_email")
         password_in = st.text_input("סיסמה", type="password", key="login_pass")
-        if st.button("התחבר", key="btn_login"):
+        if st.button("התחבר", key="btn_login", type="primary"):
             try:
                 res = supabase.auth.sign_in_with_password({"email": email_in, "password": password_in})
                 st.session_state.user = res.user
@@ -648,7 +923,7 @@ with tab_morning:
         feeling = st.number_input("תחושה כללית (1-10)", min_value=1, max_value=10, value=None, placeholder="לא סופק")
         notes = st.text_input("הערות הבוקר")
 
-        if st.form_submit_button("שגר נתונים 🔄"):
+        if st.form_submit_button("שגר נתונים 🔄", type="primary"):
             with st.spinner("מסנכרן היסטוריה מגרמין ומנתח..."):
                 history = fetch_recent_garmin_activities(p.get("garmin_email"), p.get("garmin_password"))
                 supabase.table("coach_logs").insert({
@@ -668,7 +943,7 @@ with tab_morning:
 
 # -- 3: לוח אימונים דינמי --
 with tab_calendar:
-    if st.button("🤖 בקש מהמאמן תוכנית חדשה לשבוע הקרוב"):
+    if st.button("🤖 בקש מהמאמן תוכנית חדשה לשבוע הקרוב", type="primary"):
         with st.spinner("המאמן מנתח שיאים וקצבים ובונה תוכנית..."):
             resp = coach_send(
                 "בנה לי תוכנית מפורטת לשבוע הקרוב מבוססת על המבדקים שלי - שבעת הימים, "
@@ -681,6 +956,10 @@ with tab_calendar:
     weekly_plan = user_prefs.get("weekly_plan", {})
     if not isinstance(weekly_plan, dict): weekly_plan = {}
 
+    # python weekday(): Monday=0..Sunday=6, ואילו hebrew_days מתחיל ביום ראשון -
+    # ההזחה הזו ממירה בין השניים כדי לדעת איזה יום בשבוע הוא "היום".
+    today_hebrew_day = hebrew_days[(datetime.date.today().weekday() + 1) % 7]
+
     for day_name in hebrew_days:
         day_ai_plan = weekly_plan.get(day_name, {})
 
@@ -691,10 +970,14 @@ with tab_calendar:
         if "ריצה" in title or "אינטרוולים" in title: card_class, icon = "card-run", "🏃‍♂️"
         elif "כוח" in title or "אופניים" in title: card_class, icon = "card-cross", "💪"
 
+        is_today = day_name == today_hebrew_day
+        today_class = " card-today" if is_today else ""
+        today_badge = '<span class="today-badge">היום</span> ' if is_today else ""
+
         st.markdown(f"""
-        <div class="calendar-card {card_class}">
+        <div class="calendar-card {card_class}{today_class}">
             <div class="card-badge">{icon}</div>
-            <div><div class="day-title">{html.escape(day_name)}</div><div class="workout-type">{html.escape(title)}</div></div>
+            <div><div class="day-title">{today_badge}{html.escape(day_name)}</div><div class="workout-type">{html.escape(title)}</div></div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -721,7 +1004,7 @@ with tab_records:
         pr_10k = c2.text_input("10 ק״מ", physio_json.get("pr_10k", ""), placeholder="למשל 48:00")
         pr_hm = c1.text_input("חצי מרתון", physio_json.get("pr_hm", ""))
         pr_m = c2.text_input("מרתון", physio_json.get("pr_m", ""))
-        if st.form_submit_button("שמור שיאים"):
+        if st.form_submit_button("שמור שיאים", type="primary"):
             physio_json.update({"pr_5k": pr_5k, "pr_10k": pr_10k, "pr_hm": pr_hm, "pr_m": pr_m})
             supabase.table("profiles").update({"physiology_data": json.dumps(physio_json)}).eq("id", st.session_state.user.id).execute()
             st.session_state.profile_data["physiology_data"] = json.dumps(physio_json)
@@ -767,7 +1050,7 @@ with tab_profile:
         g_email_edit = st.text_input("אימייל גרמין", p.get("garmin_email", ""))
         g_pass_edit = st.text_input("סיסמה גרמין (השאר ריק כדי לא לשנות)", "", type="password", placeholder="••••••••" if p.get("garmin_password") else "")
 
-        if st.form_submit_button("שמור פרופיל"):
+        if st.form_submit_button("שמור פרופיל", type="primary"):
             update_data = {
                 "id": st.session_state.user.id, "weight": weight, "height": height,
                 "goals": goals, "garmin_email": g_email_edit,
@@ -777,6 +1060,61 @@ with tab_profile:
             supabase.table("profiles").upsert(update_data).execute()
             st.session_state.profile_data.update(update_data)
             st.success("הפרופיל עודכן!")
+
+    st.divider()
+    st.subheader("🏃‍♂️ 5 האימונים האחרונים")
+    recent_runs = (supabase.table("run_history").select("*")
+                   .eq("user_id", st.session_state.user.id)
+                   .order("activity_date", desc=True).limit(5).execute().data) or []
+
+    if not recent_runs:
+        st.caption("עדיין אין אימונים רשומים - ייבא קובץ CSV מגרמין למטה כדי להתחיל.")
+    else:
+        runs_df = pd.DataFrame(recent_runs).set_index("id")
+        runs_df["activity_date"] = pd.to_datetime(runs_df["activity_date"]).dt.date
+        runs_df["duration_min"] = (runs_df["duration_sec"] / 60).round(1)
+        display_cols = ["activity_date", "activity_type", "title", "distance_km",
+                         "duration_min", "avg_hr", "max_hr", "avg_pace_sec_per_km", "elevation_gain_m"]
+        runs_df = runs_df[display_cols]
+
+        edited_runs_df = st.data_editor(
+            runs_df,
+            column_config={
+                "activity_date": st.column_config.DateColumn("תאריך"),
+                "activity_type": st.column_config.TextColumn("סוג פעילות"),
+                "title": st.column_config.TextColumn("כותרת"),
+                "distance_km": st.column_config.NumberColumn("מרחק (ק\"מ)", min_value=0.0, step=0.1),
+                "duration_min": st.column_config.NumberColumn("משך (דקות)", min_value=0.0, step=1.0),
+                "avg_hr": st.column_config.NumberColumn("דופק ממוצע", min_value=0, step=1),
+                "max_hr": st.column_config.NumberColumn("דופק מקסימלי", min_value=0, step=1),
+                "avg_pace_sec_per_km": st.column_config.NumberColumn("קצב (שנ'/ק\"מ)", min_value=0, step=1),
+                "elevation_gain_m": st.column_config.NumberColumn("עלייה מצטברת (מ')", min_value=0, step=1),
+            },
+            num_rows="fixed",
+            key="recent_runs_editor",
+        )
+
+        if st.button("💾 שמור שינויים באימונים"):
+            changed = 0
+            for run_id, row in edited_runs_df.iterrows():
+                if not row.equals(runs_df.loc[run_id]):
+                    supabase.table("run_history").update({
+                        "activity_date": row["activity_date"].isoformat(),
+                        "activity_type": row["activity_type"],
+                        "title": row["title"],
+                        "distance_km": row["distance_km"],
+                        "duration_sec": int(row["duration_min"] * 60) if pd.notna(row["duration_min"]) else None,
+                        "avg_hr": int(row["avg_hr"]) if pd.notna(row["avg_hr"]) else None,
+                        "max_hr": int(row["max_hr"]) if pd.notna(row["max_hr"]) else None,
+                        "avg_pace_sec_per_km": row["avg_pace_sec_per_km"],
+                        "elevation_gain_m": row["elevation_gain_m"],
+                    }).eq("id", int(run_id)).execute()
+                    changed += 1
+            if changed:
+                st.success(f"עודכנו {changed} אימונים!")
+                st.rerun()
+            else:
+                st.info("לא זוהו שינויים.")
 
     st.divider()
     st.subheader("🏃 ייבוא היסטוריית ריצות מגרמין")
