@@ -279,6 +279,18 @@ st.markdown("""
         box-shadow: var(--shadow-sm);
     }
 
+    /* Forms (daily check-in, PRs, fitness tests, profile) get the same card treatment */
+    [data-testid="stForm"] {
+        border: 1px solid var(--border-soft) !important;
+        border-radius: 14px !important;
+        background-color: var(--card) !important;
+        box-shadow: var(--shadow-sm);
+        padding: 1.4rem 1.6rem !important;
+    }
+    [data-testid="stForm"] [data-testid="stWidgetLabel"] p {
+        font-weight: 500 !important;
+    }
+
     /* גלילה עדינה */
     ::-webkit-scrollbar { width: 10px; height: 10px; }
     ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
