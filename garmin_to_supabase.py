@@ -75,6 +75,9 @@ def sync_activities(client: Garmin):
             "max_hr": int(a["maxHR"]) if a.get("maxHR") else None,
             "avg_pace_sec_per_km": _pace_sec_per_km(a.get("distance"), a.get("duration")),
             "elevation_gain_m": a.get("elevationGain"),
+            "avg_cadence": a.get("averageRunningCadenceInStepsPerMinute"),
+            "aerobic_te": a.get("aerobicTrainingEffect"),
+            "anaerobic_te": a.get("anaerobicTrainingEffect"),
         }
         # Idempotent: the unique index on garmin_activity_id turns a re-run into
         # a harmless update of the same row instead of a duplicate insert.
