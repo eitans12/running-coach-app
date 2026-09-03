@@ -1,0 +1,49 @@
+# .github/workflows/sync.yml
+# Automatic daily pipeline for ai-running-coach:
+#   Garmin -> Supabase -> Google Sheets
+#
+# Runs on GitHub's servers on a schedule, so it works even when the
+# Codespace is closed. Set the repo secrets listed in README_sync.md first.
+
+name: running-coach-sync
+
+on:
+  schedule:
+    # 03:00 UTC = ~06:00 Israel time (summer). Adjust as you like; cron is UTC.
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}          # lets you run it manually from the Actions tab
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-sync.txt
+
+      - name: Write Google service-account credentials
+        run: printf '%s' "$GOOGLE_CREDENTIALS" > google_credentials.json
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+      - name: Garmin -> Supabase
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          APP_USER_ID: ${{ secrets.APP_USER_ID }}
+          SYNC_DAYS: "30"
+        run: python garmin_to_supabase.py
+
+      - name: Supabase -> Google Sheets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          APP_USER_ID: ${{ secrets.APP_USER_ID }}
+        run: python supabase_to_sheets.py
