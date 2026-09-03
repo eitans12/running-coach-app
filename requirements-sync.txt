@@ -1,0 +1,5 @@
+garminconnect
+supabase
+gspread
+google-auth
+python-dateutil
