@@ -52,18 +52,11 @@ def _pace_sec_per_km(distance_m, duration_s):
 # --------------------------------------------------------------------------
 # activities -> run_history
 # --------------------------------------------------------------------------
-def sync_activities(client: Garmin):
-    activities = client.get_activities_by_date(
-        (date.today() - timedelta(days=SYNC_DAYS)).isoformat(),
-        date.today().isoformat(),
-    )
-    upserted = 0
-    for a in activities:
-        start = (a.get("startTimeLocal") or "")[:10]          # YYYY-MM-DD
-        if not start:
-            continue
-
-        row = {
+def _activity_row(a):
+    start = (a.get("startTimeLocal") or "")[:10]              # YYYY-MM-DD
+    if not start:
+        return None
+    return {
             "user_id": USER_ID,
             "garmin_activity_id": str(a.get("activityId")) if a.get("activityId") else None,
             "activity_date": start,
@@ -79,11 +72,33 @@ def sync_activities(client: Garmin):
             "aerobic_te": a.get("aerobicTrainingEffect"),
             "anaerobic_te": a.get("anaerobicTrainingEffect"),
         }
-        # Idempotent: the unique index on garmin_activity_id turns a re-run into
-        # a harmless update of the same row instead of a duplicate insert.
-        sb.table("run_history").upsert(row, on_conflict="garmin_activity_id").execute()
-        upserted += 1
-    print(f"run_history: upserted {upserted} activities.")
+
+
+# --------------------------------------------------------------------------
+# activities -> run_history  (FULL history via pagination)
+# --------------------------------------------------------------------------
+def sync_activities(client: Garmin):
+    """Pull the entire activity history (paged), not just a recent window.
+
+    get_activities(start, limit) returns activities newest-first in pages;
+    we walk pages until exhausted. Upsert on garmin_activity_id keeps re-runs
+    idempotent, so this is safe to run daily even over the whole history.
+    """
+    start, batch, total, MAX = 0, 100, 0, 5000
+    while start < MAX:
+        activities = client.get_activities(start, batch)
+        if not activities:
+            break
+        for a in activities:
+            row = _activity_row(a)
+            if not row:
+                continue
+            sb.table("run_history").upsert(row, on_conflict="garmin_activity_id").execute()
+            total += 1
+        if len(activities) < batch:
+            break
+        start += batch
+    print(f"run_history: upserted {total} activities (full history).")
 
 
 # --------------------------------------------------------------------------
