@@ -1,13 +1,19 @@
 # .github/workflows/push-workouts.yml
-# MANUAL two-way sync: push planned structured workouts from Supabase
-# (planned_workouts, status=pending) into Garmin Connect.
-# No schedule on purpose — this writes to your real Garmin account, so it
-# runs only when you trigger it from the Actions tab.
+# Two-way sync: push planned structured workouts (Supabase planned_workouts)
+# into Garmin, and schedule bank-sheet workouts onto the dates the coach
+# wrote in column F of the workout-bank Google Sheet.
+#
+# Runs automatically every morning, and can also be triggered by hand from
+# the Actions tab. It writes to your real Garmin account, so it only ever
+# ADDS/RESCHEDULES workouts — it never deletes anything.
 
 name: push-workouts
 
 on:
   workflow_dispatch: {}
+  schedule:
+    # 04:00 UTC daily — an hour after the pull sync (sync.yml runs 03:00 UTC)
+    - cron: "0 4 * * *"
 
 jobs:
   push:
@@ -22,7 +28,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-sync.txt
 
-      - name: Push planned workouts to Garmin
+      - name: Write Google service-account credentials
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > google_credentials.json
+
+      - name: Push planned + bank-sheet workouts to Garmin
         env:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
