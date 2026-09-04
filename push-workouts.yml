@@ -1,0 +1,32 @@
+# .github/workflows/push-workouts.yml
+# MANUAL two-way sync: push planned structured workouts from Supabase
+# (planned_workouts, status=pending) into Garmin Connect.
+# No schedule on purpose — this writes to your real Garmin account, so it
+# runs only when you trigger it from the Actions tab.
+
+name: push-workouts
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-sync.txt
+
+      - name: Push planned workouts to Garmin
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          APP_USER_ID: ${{ secrets.APP_USER_ID }}
+        run: python garmin_workout_builder.py
