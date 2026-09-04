@@ -166,8 +166,14 @@ def build_payload(spec):
 # ==========================================================================
 # Garmin API (via the authenticated garth session inside garminconnect)
 # ==========================================================================
-def _get(client, path):
-    """Authenticated GET against Garmin's connect API (returns parsed JSON)."""
+def _get(client, path, params=None):
+    """Authenticated GET against Garmin's connect API (returns parsed JSON).
+
+    Query args must go through `params`, not embedded in the path — garth
+    rejects a path that contains a '?' as an "Invalid API path".
+    """
+    if params:
+        return client.connectapi(path, params=params)
     return client.connectapi(path)
 
 
@@ -186,7 +192,8 @@ def _post(client, path, payload):
 
 def workout_exists(client, name):
     """Idempotency: has a workout with this exact name already been uploaded?"""
-    existing = _get(client, "/workout-service/workouts?start=0&limit=200") or []
+    existing = _get(client, "/workout-service/workouts",
+                    params={"start": 0, "limit": 200}) or []
     return any((w or {}).get("workoutName") == name for w in existing)
 
 
