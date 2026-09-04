@@ -9,9 +9,9 @@ name: running-coach-sync
 
 on:
   schedule:
-    # 03:00 UTC = ~06:00 Israel time (summer). Adjust as you like; cron is UTC.
-    - cron: "0 3 * * *"
-  workflow_dispatch: {}          # lets you run it manually from the Actions tab
+    # Every 5 hours (UTC): 00,05,10,15,20 -> ~03:00,08:00,13:00,18:00,23:00 Israel.
+    - cron: "0 */5 * * *"
+  workflow_dispatch: {}          # lets you (or a phone shortcut) run it on demand
 
 jobs:
   sync:
