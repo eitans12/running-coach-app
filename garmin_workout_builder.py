@@ -190,11 +190,15 @@ def _post(client, path, payload):
         return resp
 
 
-def workout_exists(client, name):
-    """Idempotency: has a workout with this exact name already been uploaded?"""
+def find_workout_id(client, name):
+    """Return the Garmin workoutId of an existing workout with this exact name,
+    or None. Lets us SCHEDULE an already-uploaded workout without recreating it."""
     existing = _get(client, "/workout-service/workouts",
                     params={"start": 0, "limit": 200}) or []
-    return any((w or {}).get("workoutName") == name for w in existing)
+    for w in existing:
+        if (w or {}).get("workoutName") == name:
+            return w.get("workoutId")
+    return None
 
 
 def create_workout(client, payload):
@@ -208,12 +212,15 @@ def schedule_workout(client, workout_id, date_iso):
 
 
 def push_workout(client, spec, date_iso=None):
-    """Create (if new) and optionally schedule one structured workout."""
-    if workout_exists(client, spec["name"]):
-        print(f"· skip (already exists): {spec['name']}")
-        return None
-    wid = create_workout(client, build_payload(spec))
-    print(f"· created workout {wid}: {spec['name']}")
+    """Ensure the workout exists in Garmin (create once), then — if a date is
+    given — schedule THAT workout onto the calendar. Re-runnable without
+    creating duplicates: an existing workout is reused and just (re)scheduled."""
+    wid = find_workout_id(client, spec["name"])
+    if wid:
+        print(f"· exists: {spec['name']} (id {wid})")
+    else:
+        wid = create_workout(client, build_payload(spec))
+        print(f"· created workout {wid}: {spec['name']}")
     if wid and date_iso:
         schedule_workout(client, wid, date_iso)
         print(f"  scheduled → {date_iso}")
@@ -264,10 +271,12 @@ def _sb():
                          os.environ["SUPABASE_SERVICE_ROLE_KEY"])
 
 
-def read_pending(sb, user_id):
-    """Planned workouts not yet pushed to Garmin."""
+def read_actionable(sb, user_id):
+    """Rows that still need work: not yet created (pending), or created but
+    not yet scheduled (uploaded). 'scheduled' rows are done."""
     return (sb.table("planned_workouts").select("*")
-            .eq("user_id", user_id).eq("status", "pending")
+            .eq("user_id", user_id)
+            .in_("status", ["pending", "uploaded"])
             .order("scheduled_date").execute().data)
 
 
@@ -276,14 +285,19 @@ def _mark(sb, row_id, **fields):
 
 
 def sync_planned_to_garmin(client, sb, user_id):
-    rows = read_pending(sb, user_id)
-    print(f"{len(rows)} pending workout(s).")
+    rows = read_actionable(sb, user_id)
+    print(f"{len(rows)} actionable workout(s).")
     for r in rows:
+        date = r.get("scheduled_date")
+        # An already-uploaded workout with no date has nothing left to do.
+        if r["status"] == "uploaded" and not date:
+            continue
         try:
-            wid = push_workout(client, r["spec"], r.get("scheduled_date"))
+            wid = push_workout(client, r["spec"], date)
             _mark(sb, r["id"],
-                  status="uploaded",
-                  garmin_workout_id=str(wid) if wid else None,
+                  status="scheduled" if date else "uploaded",   # date => on the calendar
+                  garmin_workout_id=str(wid) if wid else r.get("garmin_workout_id"),
+                  error_message=None,
                   uploaded_at=datetime.now(timezone.utc).isoformat())
         except Exception as e:                       # keep going on the rest
             print(f"  ! error on {r.get('name')}: {e}")
