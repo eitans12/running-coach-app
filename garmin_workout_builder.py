@@ -166,15 +166,18 @@ def build_payload(spec):
 # ==========================================================================
 # Garmin API (via the authenticated garth session inside garminconnect)
 # ==========================================================================
-def _api(client, path, method="GET", payload=None):
-    """Version-tolerant call into Garmin's connect API."""
-    garth = client.garth
-    if hasattr(garth, "connectapi"):
-        if payload is not None:
-            return garth.connectapi(path, method=method, json=payload)
-        return garth.connectapi(path, method=method)
-    # fallback for older garth
-    resp = garth.request(method, "connectapi", path, api=True, json=payload)
+def _get(client, path):
+    """Authenticated GET against Garmin's connect API (returns parsed JSON)."""
+    return client.connectapi(path)
+
+
+def _post(client, path, payload):
+    """Authenticated POST against Garmin's connect API.
+
+    garminconnect exposes the garth-based HTTP client as `client.client`, and
+    POSTs are made with client.client.post("connectapi", <path>, json=...).
+    """
+    resp = client.client.post("connectapi", path, json=payload)
     try:
         return resp.json()
     except Exception:
@@ -183,19 +186,18 @@ def _api(client, path, method="GET", payload=None):
 
 def workout_exists(client, name):
     """Idempotency: has a workout with this exact name already been uploaded?"""
-    existing = _api(client, "/workout-service/workouts?start=0&limit=200") or []
+    existing = _get(client, "/workout-service/workouts?start=0&limit=200") or []
     return any((w or {}).get("workoutName") == name for w in existing)
 
 
 def create_workout(client, payload):
-    resp = _api(client, "/workout-service/workout", method="POST", payload=payload)
+    resp = _post(client, "/workout-service/workout", payload)
     return (resp or {}).get("workoutId") if isinstance(resp, dict) else None
 
 
 def schedule_workout(client, workout_id, date_iso):
     """Attach the workout to a calendar date so it appears on the watch that day."""
-    return _api(client, f"/workout-service/schedule/{workout_id}",
-                method="POST", payload={"date": date_iso})
+    return _post(client, f"/workout-service/schedule/{workout_id}", {"date": date_iso})
 
 
 def push_workout(client, spec, date_iso=None):
