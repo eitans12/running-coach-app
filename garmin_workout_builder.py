@@ -190,14 +190,43 @@ def _post(client, path, payload):
         return resp
 
 
+def _norm(s):
+    """Loose key for matching workout names across the bank sheet and Garmin:
+    lowercased, punctuation/spaces stripped, so 'אימון הפוגות: 5x400m (קצב 5:28)'
+    and '5x400m (קצב 5:28)' share the numeric/latin core."""
+    s = (s or "").lower()
+    return "".join(ch for ch in s if ch.isalnum())
+
+
 def find_workout_id(client, name):
-    """Return the Garmin workoutId of an existing workout with this exact name,
-    or None. Lets us SCHEDULE an already-uploaded workout without recreating it."""
+    """Return the Garmin workoutId of an existing workout matching `name`.
+
+    Bank-sheet names and Garmin names don't always match exactly (the sheet
+    may say '5x400m (קצב 5:28)' while Garmin holds
+    'אימון הפוגות: 5x400m (קצב 5:28)'). So match in three passes, most strict
+    first: exact -> one contains the other -> normalized substring. Returns
+    None only if nothing plausibly matches, so we don't reschedule the wrong
+    workout."""
     existing = _get(client, "/workout-service/workouts",
                     params={"start": 0, "limit": 200}) or []
-    for w in existing:
-        if (w or {}).get("workoutName") == name:
-            return w.get("workoutId")
+    names = [((w or {}).get("workoutName") or "", (w or {}).get("workoutId"))
+             for w in existing]
+
+    # 1) exact
+    for wn, wid in names:
+        if wn == name:
+            return wid
+    # 2) raw containment either direction
+    for wn, wid in names:
+        if wn and name and (name in wn or wn in name):
+            return wid
+    # 3) normalized (strip spaces/punctuation) containment
+    key = _norm(name)
+    if key:
+        for wn, wid in names:
+            wk = _norm(wn)
+            if wk and (key in wk or wk in key):
+                return wid
     return None
 
 
@@ -304,11 +333,92 @@ def sync_planned_to_garmin(client, sb, user_id):
             _mark(sb, r["id"], status="error", error_message=str(e))
 
 
+# ==========================================================================
+# Bank-sheet-driven flow: read the coach's workout-bank Google Sheet and
+# SCHEDULE the matching Garmin workouts onto the dates written in column F.
+# ==========================================================================
+# This is the hands-off path: Spark writes a date in column F of the bank
+# sheet, and this reschedules that workout onto the Garmin calendar. It can
+# only schedule workouts that ALREADY EXIST in Garmin (the sheet has no
+# structured-spec column) — brand-new workout *types* still get created via
+# the planned_workouts / spec path above.
+BANK_SHEET_ID = "1Oq-rnrwlmfJ6MwSemhvUuQlwkNNwEWO_FK60rWiK7i0"
+BANK_NAME_COL = 1      # A: שם האימון
+BANK_DATE_COL = 6      # F: תאריך שיוך (YYYY-MM-DD)
+BANK_HEADER_ROW = 1    # data starts row 2
+
+
+def _parse_iso_date(s):
+    """Accept the date formats a human might type in column F -> 'YYYY-MM-DD'."""
+    from datetime import datetime as _dt
+    s = (s or "").strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d.%m.%Y", "%Y/%m/%d"):
+        try:
+            return _dt.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _open_bank():
+    import gspread
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_file(
+        "google_credentials.json",
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    return gspread.authorize(creds).open_by_key(BANK_SHEET_ID).sheet1
+
+
+def sync_bank_to_garmin(client):
+    """Read the workout-bank sheet; for every row that has a date in col F,
+    find the matching Garmin workout by name and schedule it to that date.
+    Re-runnable: scheduling the same workout to the same date is idempotent."""
+    ws = _open_bank()
+    grid = ws.get_all_values()
+    scheduled = missing = skipped = 0
+    for idx in range(BANK_HEADER_ROW, len(grid)):        # 0-based; skip header
+        row = grid[idx]
+        name = (row[BANK_NAME_COL - 1] if len(row) >= BANK_NAME_COL else "").strip()
+        date_iso = _parse_iso_date(
+            row[BANK_DATE_COL - 1] if len(row) >= BANK_DATE_COL else "")
+        if not name or not date_iso:
+            skipped += 1
+            continue
+        wid = find_workout_id(client, name)
+        if not wid:
+            print(f"  ! no Garmin workout matches '{name}' — create it first (spec path).")
+            missing += 1
+            continue
+        schedule_workout(client, wid, date_iso)
+        print(f"· scheduled '{name}' (id {wid}) → {date_iso}")
+        scheduled += 1
+    print(f"bank: {scheduled} scheduled, {missing} unmatched, {skipped} rows without a date.")
+    return scheduled, missing
+
+
 def main():
     client = Garmin(os.environ["GARMIN_EMAIL"], os.environ["GARMIN_PASSWORD"])
     client.login()
-    sb = _sb()
-    sync_planned_to_garmin(client, sb, os.environ["APP_USER_ID"])
+
+    # 1) create+schedule any brand-new structured workouts from Supabase
+    try:
+        sb = _sb()
+        sync_planned_to_garmin(client, sb, os.environ["APP_USER_ID"])
+    except Exception as e:
+        print(f"planned_workouts step skipped/failed: {e}")
+
+    # 2) schedule bank-sheet workouts onto the dates the coach wrote in col F
+    if os.path.exists("google_credentials.json"):
+        try:
+            sync_bank_to_garmin(client)
+        except Exception as e:
+            print(f"bank-sheet step failed: {e}")
+    else:
+        print("bank-sheet step skipped (no google_credentials.json).")
+
     print("Done.")
 
 
