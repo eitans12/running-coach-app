@@ -27,6 +27,7 @@ A concrete example spec for Eitan's next interval session is at the bottom.
 """
 
 import os
+import json
 from datetime import datetime, timezone
 
 from garminconnect import Garmin
@@ -334,18 +335,47 @@ def sync_planned_to_garmin(client, sb, user_id):
 
 
 # ==========================================================================
-# Bank-sheet-driven flow: read the coach's workout-bank Google Sheet and
-# SCHEDULE the matching Garmin workouts onto the dates written in column F.
+# Bank-sheet-driven flow: read the coach's workout-bank Google Sheet, BUILD
+# any brand-new workout type from its structured spec (col G), and SCHEDULE
+# each row onto the date in column F.
 # ==========================================================================
-# This is the hands-off path: Spark writes a date in column F of the bank
-# sheet, and this reschedules that workout onto the Garmin calendar. It can
-# only schedule workouts that ALREADY EXIST in Garmin (the sheet has no
-# structured-spec column) — brand-new workout *types* still get created via
-# the planned_workouts / spec path above.
+# Fully hands-off path. The coach (Spark) fills a row:
+#   A = name, ..., F = date (YYYY-MM-DD), G = structured spec (JSON, optional)
+# For each row:
+#   * if a workout with that name already exists in Garmin  -> just (re)schedule
+#   * else if column G holds a valid spec JSON              -> BUILD it, then schedule
+#   * else                                                  -> report unmatched
+# So a repeat of a known type needs only a date in F; a genuinely NEW type
+# needs the JSON spec in G once, and then it builds and schedules itself with
+# no human in the loop. Idempotent: an existing workout is reused, not rebuilt.
 BANK_SHEET_ID = "1Oq-rnrwlmfJ6MwSemhvUuQlwkNNwEWO_FK60rWiK7i0"
 BANK_NAME_COL = 1      # A: שם האימון
 BANK_DATE_COL = 6      # F: תאריך שיוך (YYYY-MM-DD)
+BANK_SPEC_COL = 7      # G: מפרט מובנה JSON (optional; only needed for a NEW type)
 BANK_HEADER_ROW = 1    # data starts row 2
+
+
+def _spec_from_cell(cell, name):
+    """Parse a bank-sheet spec cell (col G) into a WorkoutSpec dict, or None.
+
+    The cell holds JSON the coach wrote, e.g.:
+      {"sport":"running","steps":[
+        {"kind":"warmup","end":["distance",1000]},
+        {"kind":"repeat","iterations":5,"steps":[
+           {"kind":"interval","end":["distance",400],"target":["pace","5:30","5:25"]},
+           {"kind":"recovery","end":["time",90]}]},
+        {"kind":"cooldown","end":["distance",1000]}]}
+    The name defaults to column A when the JSON omits it. Returns None on empty
+    or invalid JSON (so a bad spec is skipped, never turned into a wrong workout)."""
+    cell = (cell or "").strip()
+    if not cell:
+        return None
+    spec = json.loads(cell)              # raises on bad JSON -> caught by caller
+    if not isinstance(spec, dict) or not spec.get("steps"):
+        raise ValueError("spec must be an object with a non-empty 'steps' list")
+    spec.setdefault("name", name)
+    spec.setdefault("sport", "running")
+    return spec
 
 
 def _parse_iso_date(s):
@@ -373,29 +403,50 @@ def _open_bank():
 
 
 def sync_bank_to_garmin(client):
-    """Read the workout-bank sheet; for every row that has a date in col F,
-    find the matching Garmin workout by name and schedule it to that date.
-    Re-runnable: scheduling the same workout to the same date is idempotent."""
+    """Read the workout-bank sheet and, for every row, ensure its workout
+    exists in Garmin (building it from the col-G spec when it's a new type),
+    then schedule it to the date in column F. Idempotent and per-row safe: a
+    bad spec on one row is reported and skipped, never crashing the rest."""
     ws = _open_bank()
     grid = ws.get_all_values()
-    scheduled = missing = skipped = 0
+    scheduled = built = missing = skipped = errors = 0
     for idx in range(BANK_HEADER_ROW, len(grid)):        # 0-based; skip header
         row = grid[idx]
         name = (row[BANK_NAME_COL - 1] if len(row) >= BANK_NAME_COL else "").strip()
         date_iso = _parse_iso_date(
             row[BANK_DATE_COL - 1] if len(row) >= BANK_DATE_COL else "")
-        if not name or not date_iso:
+        spec_cell = row[BANK_SPEC_COL - 1] if len(row) >= BANK_SPEC_COL else ""
+        if not name:
             skipped += 1
             continue
+
         wid = find_workout_id(client, name)
+
+        # New type: no Garmin workout yet, but the coach supplied a spec -> build it.
+        if not wid and (spec_cell or "").strip():
+            try:
+                spec = _spec_from_cell(spec_cell, name)
+                wid = create_workout(client, build_payload(spec))
+                print(f"· built new workout {wid} from spec: {name}")
+                built += 1
+            except Exception as e:
+                print(f"  ! invalid spec for '{name}' (col G) — skipped: {e}")
+                errors += 1
+                continue
+
         if not wid:
-            print(f"  ! no Garmin workout matches '{name}' — create it first (spec path).")
+            print(f"  ! no Garmin workout matches '{name}' and no spec in col G — skipped.")
             missing += 1
             continue
-        schedule_workout(client, wid, date_iso)
-        print(f"· scheduled '{name}' (id {wid}) → {date_iso}")
-        scheduled += 1
-    print(f"bank: {scheduled} scheduled, {missing} unmatched, {skipped} rows without a date.")
+
+        if date_iso:
+            schedule_workout(client, wid, date_iso)
+            print(f"· scheduled '{name}' (id {wid}) → {date_iso}")
+            scheduled += 1
+        else:
+            print(f"· ready (no date yet): '{name}' (id {wid})")
+    print(f"bank: {scheduled} scheduled, {built} newly built, "
+          f"{missing} unmatched, {errors} bad specs, {skipped} nameless rows.")
     return scheduled, missing
 
 
