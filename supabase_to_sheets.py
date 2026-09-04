@@ -155,7 +155,7 @@ def sync_workouts():
         if not d:
             continue
         cells = {
-            3:  r.get("activity_type") or r.get("title") or "",   # C (only if appended)
+            3:  r.get("title") or r.get("activity_type") or "",   # C (only if appended) — prefer the Hebrew activity title over the raw English type
             6:  r.get("distance_km"),                             # F actual km
             7:  _fmt_duration(r.get("duration_sec")),             # G duration
             8:  _fmt_pace(r.get("avg_pace_sec_per_km")),          # H pace
