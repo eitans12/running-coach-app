@@ -9,8 +9,11 @@ name: running-coach-sync
 
 on:
   schedule:
-    # Every 5 hours (UTC): 00,05,10,15,20 -> ~03:00,08:00,13:00,18:00,23:00 Israel.
-    - cron: "0 */5 * * *"
+    # UTC 06:00,11:00,16:00 -> 09:00, 14:00, 19:00 Israel time.
+    # The 09:00 run is the anchor: recovery metrics (HRV, sleep, RHR) are only
+    # reliable after you wake and the watch has synced the night, so we capture
+    # them at 9am; the daytime runs pick up any runs you do.
+    - cron: "0 6,11,16 * * *"
   workflow_dispatch: {}          # lets you (or a phone shortcut) run it on demand
 
 jobs:
