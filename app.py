@@ -529,10 +529,22 @@ def coach_send(message_text):
     try:
         return st.session_state.chat_session.send_message(full_message)
     except ClientError as e:
-        if getattr(e, "code", None) != 429:
-            raise
+        # אף שגיאת AI לא צריכה להפיל את כל האפליקציה — תמיד מחזירים הודעה ידידותית.
+        # (הגרסה הקודמת עשתה raise לכל שגיאה שאינה בדיוק 429, ולכן קרסה כשגוגל
+        #  החזירה קוד/פורמט שונה — למשל מכסה משותפת שנגמרת כששני משתמשים פעילים.)
+        code = getattr(e, "code", None) or getattr(e, "status_code", None)
+        detail = str(e)
+        if code is None:
+            m = re.search(r"\b([45]\d\d)\b", detail)
+            code = int(m.group(1)) if m else None
+        low = detail.lower()
+        if code == 429 or any(k in low for k in ("resource_exhausted", "quota", "rate limit", "rate-limit")):
+            return _CoachResponse(
+                "Coach Leo 😅 חרגנו כרגע מהמכסה של Gemini. בתוכנית החינמית המכסה משותפת לכל "
+                "המשתמשים, אז כשכמה אנשים פעילים יחד היא נגמרת מהר — נסו שוב בעוד דקה-שתיים."
+            )
         return _CoachResponse(
-            "Coach Leo 😅 חרגת מהמכסה החינמית של גוגל ל-Gemini. נסה שוב בעוד דקה."
+            f"Coach Leo נתקל בבעיה זמנית מול שירות ה-AI (קוד {code or 'לא ידוע'}). נסו שוב עוד רגע."
         )
     except Exception as e:
         return _CoachResponse(f"שגיאה בתקשורת עם המאמן: {e}")
