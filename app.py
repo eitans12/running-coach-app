@@ -301,9 +301,26 @@ st.markdown("""
 # --- התחברות למסד הנתונים ---
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
-supabase: Client = create_client(url, key)
 
-# Streamlit יוצר מחדש את ה-client הזה בכל ריצה, אז צריך לשחזר את סשן המשתמש
+# ⚠️ ריבוי משתמשים: Streamlit חולק משתנים גלובליים ברמת-המודול בין כל הסשנים
+# בו-זמנית. לקוח Supabase יחיד ומשותף גורם לכך שקריאת auth.set_session של משתמש
+# אחד דורסת את של השני על אותו אובייקט — ומכאן שגיאות RLS או צפייה בנתוני מתאמן
+# אחר כששני אנשים פעילים יחד. הפתרון: לכל session לקוח Supabase משלו, נשמר
+# ב-st.session_state (שהוא מודע-סשן), ו-`supabase` הוא פרוקסי שמפנה אליו — כך כל
+# 40 הקריאות הקיימות (supabase.table/…, supabase.auth/…) עובדות ללא שינוי אך
+# ממופות תמיד ללקוח של המשתמש הנוכחי בלבד.
+def _session_supabase() -> Client:
+    if st.session_state.get("_sb_client") is None:
+        st.session_state["_sb_client"] = create_client(url, key)
+    return st.session_state["_sb_client"]
+
+class _SupabaseProxy:
+    def __getattr__(self, name):
+        return getattr(_session_supabase(), name)
+
+supabase = _SupabaseProxy()
+
+# משחזרים את סשן המשתמש על הלקוח הפרטי של ה-session
 # (אחרת הבקשות רצות עם מפתח ה-anon בלבד, ו-RLS חוסם אותן כי auth.uid() ריק)
 if st.session_state.get("sb_access_token") and st.session_state.get("sb_refresh_token"):
     try:
@@ -815,8 +832,15 @@ def push_to_garmin(workout_name, day_ai_plan, profile):
 
 # --- הגדרת המאמן ---
 @st.cache_resource
-def _get_genai_client():
-    return genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
+def _get_genai_client(api_key: str):
+    # ה-cache ממופתח לפי api_key, כך שלכל מפתח יש client משלו (בטוח לריבוי משתמשים).
+    return genai.Client(api_key=api_key)
+
+def _current_gemini_key() -> str:
+    # מפתח Gemini אישי של המשתמש (אם הזין בפרופיל) — אחרת המפתח המשותף של האפליקציה.
+    # מפתח אישי נותן לכל משתמש מכסה נפרדת, כך שהמכסה החינמית לא נגמרת כשכמה אנשים פעילים.
+    personal = ((st.session_state.get("profile_data") or {}).get("gemini_api_key") or "").strip()
+    return personal or st.secrets["GOOGLE_API_KEY"]
 def init_chat_session():
     # חישוב מגמה מהירה מתוך ה-coach_logs (ה-7 האחרונים)
     logs = supabase.table("coach_logs").select("*").eq("user_id", st.session_state.user.id).order("id", desc=True).limit(7).execute().data
@@ -849,7 +873,7 @@ def init_chat_session():
     """
     # מוצמד לגרסה יציבה (לא "-latest") - כדי לא ליפול על מודל preview חדש
     # עם מכסת חינם זעירה (ראינו 5 בקשות/דקה בלבד על gemini-flash-latest)
-    client = _get_genai_client()
+    client = _get_genai_client(_current_gemini_key())
     st.session_state.chat_session = client.chats.create(model='gemini-2.5-flash', config=types.GenerateContentConfig(system_instruction=system_instruction))
 
 # --- כניסה ---
@@ -1074,6 +1098,13 @@ with tab_profile:
         g_email_edit = st.text_input("אימייל גרמין", p.get("garmin_email", ""))
         g_pass_edit = st.text_input("סיסמה גרמין (השאר ריק כדי לא לשנות)", "", type="password", placeholder="••••••••" if p.get("garmin_password") else "")
 
+        gemini_key_edit = st.text_input(
+            "מפתח Gemini API אישי (מומלץ)", "", type="password",
+            placeholder="••••••••" if p.get("gemini_api_key") else "AIza...",
+            help="מפתח משלך נותן לך מכסה נפרדת כך שהמאמן לא ייתקע כשמשתמשים אחרים פעילים. "
+                 "משיגים בחינם ב-Google AI Studio → Get API key. השאר ריק כדי לא לשנות.",
+        )
+
         if st.form_submit_button("שמור פרופיל", type="primary"):
             update_data = {
                 "id": st.session_state.user.id, "weight": weight, "height": height,
@@ -1081,8 +1112,14 @@ with tab_profile:
             }
             if g_pass_edit:
                 update_data["garmin_password"] = g_pass_edit
+            key_changed = bool(gemini_key_edit) and gemini_key_edit != (p.get("gemini_api_key") or "")
+            if gemini_key_edit:
+                update_data["gemini_api_key"] = gemini_key_edit.strip()
             supabase.table("profiles").upsert(update_data).execute()
             st.session_state.profile_data.update(update_data)
+            if key_changed:
+                # שהמאמן ייבנה מחדש עם המפתח החדש בהודעה הבאה
+                st.session_state.chat_session = None
             st.success("הפרופיל עודכן!")
 
     st.divider()
