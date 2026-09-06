@@ -241,6 +241,91 @@ def schedule_workout(client, workout_id, date_iso):
     return _post(client, f"/workout-service/schedule/{workout_id}", {"date": date_iso})
 
 
+# ==========================================================================
+# Calendar helpers — Garmin's schedule endpoint is ADDITIVE (each call adds a
+# new calendar entry), so scheduling the same workout on the same date twice
+# creates a duplicate. These let us (a) skip a date that's already scheduled,
+# and (b) clean up duplicates left by earlier non-idempotent runs.
+# ==========================================================================
+def _calendar_items(client, year, month0):
+    """Calendar items for a month. month0 is 0-indexed (Jan=0 … Sep=8)."""
+    data = _get(client, f"/calendar-service/year/{year}/month/{month0}") or {}
+    return data.get("calendarItems", []) or []
+
+
+def _months_for_dates(dates_iso):
+    """Distinct (year, month0) covering the given 'YYYY-MM-DD' dates."""
+    months = set()
+    for d in dates_iso:
+        try:
+            y, m, _ = d.split("-")
+            months.add((int(y), int(m) - 1))       # Garmin month is 0-indexed
+        except Exception:
+            continue
+    return months
+
+
+def _months_window(back=1, ahead=3):
+    """Previous month through `ahead-1` months out — a safe dedupe window."""
+    out = set()
+    base = datetime.now().year * 12 + (datetime.now().month - 1)
+    for i in range(-back, ahead):
+        t = base + i
+        out.add((t // 12, t % 12))
+    return out
+
+
+def scheduled_index(client, months):
+    """{(date_iso, workoutId_str): [scheduleId, …]} for scheduled workouts."""
+    idx = {}
+    for (y, m0) in months:
+        try:
+            items = _calendar_items(client, y, m0)
+        except Exception as e:
+            print(f"  ! calendar read failed for {y}-{m0 + 1}: {e}")
+            continue
+        for it in items:
+            if (it or {}).get("itemType") != "workout":
+                continue
+            wid, date, sid = it.get("workoutId"), it.get("date"), it.get("id")
+            if wid and date and sid is not None:
+                idx.setdefault((date, str(wid)), []).append(sid)
+    return idx
+
+
+def schedule_if_absent(client, wid, date_iso, index):
+    """Schedule only if this workout isn't already on that date — prevents the
+    duplicate that a plain schedule_workout would create on a re-run."""
+    key = (date_iso, str(wid))
+    if index.get(key):
+        return False
+    schedule_workout(client, wid, date_iso)
+    index.setdefault(key, []).append("new")        # so we don't re-add within a run
+    return True
+
+
+def _delete_schedule(client, schedule_id):
+    return client.client.request(
+        "DELETE", "connectapi", f"/workout-service/schedule/{schedule_id}", api=True)
+
+
+def dedupe_calendar(client, months):
+    """Keep exactly ONE scheduled copy per (date, workout); delete the extras.
+    A duplicate is by definition the SAME workoutId on the SAME date, so this
+    can only ever remove genuine duplicates — never a distinct workout."""
+    removed = 0
+    for (date, wid), sids in scheduled_index(client, months).items():
+        for sid in sids[1:]:                        # keep sids[0], drop the rest
+            try:
+                _delete_schedule(client, sid)
+                print(f"· removed duplicate: wid {wid} on {date} (schedule {sid})")
+                removed += 1
+            except Exception as e:
+                print(f"  ! could not remove schedule {sid} on {date}: {e}")
+    print(f"dedupe: removed {removed} duplicate calendar entries.")
+    return removed
+
+
 def push_workout(client, spec, date_iso=None):
     """Ensure the workout exists in Garmin (create once), then — if a date is
     given — schedule THAT workout onto the calendar. Re-runnable without
@@ -409,8 +494,12 @@ def sync_bank_to_garmin(client):
     bad spec on one row is reported and skipped, never crashing the rest."""
     ws = _open_bank()
     grid = ws.get_all_values()
-    scheduled = built = missing = skipped = errors = 0
-    for idx in range(BANK_HEADER_ROW, len(grid)):        # 0-based; skip header
+
+    # First pass: read rows and resolve each to a Garmin workout id
+    # (building it from the col-G spec when it's a brand-new type).
+    rows = []                                        # (name, date_iso, wid)
+    built = missing = skipped = errors = 0
+    for idx in range(BANK_HEADER_ROW, len(grid)):    # 0-based; skip header
         row = grid[idx]
         name = (row[BANK_NAME_COL - 1] if len(row) >= BANK_NAME_COL else "").strip()
         date_iso = _parse_iso_date(
@@ -421,38 +510,44 @@ def sync_bank_to_garmin(client):
             continue
 
         wid = find_workout_id(client, name)
-
-        # New type: no Garmin workout yet, but the coach supplied a spec -> build it.
         if not wid and (spec_cell or "").strip():
             try:
-                spec = _spec_from_cell(spec_cell, name)
-                wid = create_workout(client, build_payload(spec))
+                wid = create_workout(client, build_payload(_spec_from_cell(spec_cell, name)))
                 print(f"· built new workout {wid} from spec: {name}")
                 built += 1
             except Exception as e:
                 print(f"  ! invalid spec for '{name}' (col G) — skipped: {e}")
                 errors += 1
                 continue
-
         if not wid:
             print(f"  ! no Garmin workout matches '{name}' and no spec in col G — skipped.")
             missing += 1
             continue
+        rows.append((name, date_iso, wid))
 
-        if date_iso:
-            schedule_workout(client, wid, date_iso)
+    # Build the calendar index ONCE, then schedule only dates not already booked.
+    months = _months_for_dates([d for (_, d, _) in rows if d])
+    index = scheduled_index(client, months) if months else {}
+
+    scheduled = 0
+    for name, date_iso, wid in rows:
+        if not date_iso:
+            print(f"· ready (no date yet): '{name}' (id {wid})")
+        elif schedule_if_absent(client, wid, date_iso, index):
             print(f"· scheduled '{name}' (id {wid}) → {date_iso}")
             scheduled += 1
         else:
-            print(f"· ready (no date yet): '{name}' (id {wid})")
-    print(f"bank: {scheduled} scheduled, {built} newly built, "
+            print(f"· already on calendar '{name}' → {date_iso} (skip)")
+    print(f"bank: {scheduled} newly scheduled, {built} built, "
           f"{missing} unmatched, {errors} bad specs, {skipped} nameless rows.")
-    return scheduled, missing
+    return months
 
 
 def main():
     client = Garmin(os.environ["GARMIN_EMAIL"], os.environ["GARMIN_PASSWORD"])
     client.login()
+
+    months = set()
 
     # 1) create+schedule any brand-new structured workouts from Supabase
     try:
@@ -464,11 +559,18 @@ def main():
     # 2) schedule bank-sheet workouts onto the dates the coach wrote in col F
     if os.path.exists("google_credentials.json"):
         try:
-            sync_bank_to_garmin(client)
+            months |= (sync_bank_to_garmin(client) or set())
         except Exception as e:
             print(f"bank-sheet step failed: {e}")
     else:
         print("bank-sheet step skipped (no google_credentials.json).")
+
+    # 3) clean up duplicate calendar entries left by earlier non-idempotent runs
+    #    (keep exactly one scheduled copy per workout per date).
+    try:
+        dedupe_calendar(client, months | _months_window())
+    except Exception as e:
+        print(f"dedupe step failed: {e}")
 
     print("Done.")
 
