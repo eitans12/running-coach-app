@@ -176,10 +176,11 @@ def sync_workouts():
 def sync_recovery():
     rows = (sb.table("coach_logs").select("*")
             .eq("user_id", USER_ID).order("created_at").execute().data)
-    # keep one record per day (latest wins)
+    # keep one record per day. Key on metric_date (the day the reading is FOR);
+    # fall back to created_at only for older app-entered rows that predate it.
     by_day = {}
     for r in rows:
-        d = _parse_date((r.get("created_at") or "")[:10])
+        d = _parse_date(r.get("metric_date") or (r.get("created_at") or "")[:10])
         if d:
             by_day[d] = r
     records = []

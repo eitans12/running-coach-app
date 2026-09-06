@@ -105,8 +105,14 @@ def sync_activities(client: Garmin):
 # daily wellness -> coach_logs
 # --------------------------------------------------------------------------
 def sync_daily_metrics(client: Garmin):
-    """One coach_logs row per day with the recovery metrics Garmin exposes."""
-    inserted = 0
+    """One coach_logs row per DAY with the recovery metrics Garmin exposes.
+
+    The row is keyed by `metric_date` (the day the metrics belong to) — NOT by
+    created_at (the insert time). This is what lets the sheet match each day's
+    recovery to the right date. Upsert on (user_id, metric_date) makes re-runs
+    idempotent: the same day is updated, never duplicated.
+    """
+    upserted = 0
     for i in range(SYNC_DAYS):
         d = (date.today() - timedelta(days=i)).isoformat()
 
@@ -128,25 +134,16 @@ def sync_daily_metrics(client: Garmin):
         if not any([rhr, hrv, body_battery, sleep]):
             continue
 
-        # one row per day: skip if we already logged today's metrics
-        existing = (sb.table("coach_logs")
-                    .select("id")
-                    .eq("user_id", USER_ID)
-                    .gte("created_at", d + "T00:00:00")
-                    .lte("created_at", d + "T23:59:59")
-                    .execute().data)
-        if existing:
-            continue
-
-        sb.table("coach_logs").insert({
+        sb.table("coach_logs").upsert({
             "user_id": USER_ID,
+            "metric_date": d,                       # the day the reading is FOR
             "rhr": str(rhr) if rhr is not None else None,
             "hrv": int(hrv) if hrv is not None else None,
             "body_battery": str(body_battery) if body_battery is not None else None,
             "sleep_score": str(sleep) if sleep is not None else None,
-        }).execute()
-        inserted += 1
-    print(f"coach_logs: inserted {inserted} new daily-metric rows.")
+        }, on_conflict="user_id,metric_date").execute()
+        upserted += 1
+    print(f"coach_logs: upserted {upserted} daily-metric rows (by metric_date).")
 
 
 def main():
