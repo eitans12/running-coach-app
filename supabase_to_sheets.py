@@ -28,10 +28,13 @@ File:     google_credentials.json (service account with edit access to both)
 """
 
 import os
+import re
+import time
 from datetime import datetime, date
 
 from supabase import create_client, Client
 import gspread
+from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
@@ -49,6 +52,39 @@ _creds = Credentials.from_service_account_file(
     scopes=["https://www.googleapis.com/auth/spreadsheets"],
 )
 gc = gspread.authorize(_creds)
+
+
+# --------------------------------------------------------------------------
+# Google Sheets calls occasionally hit a TRANSIENT server error (HTTP 429 rate
+# limit, or 500/502/503/504 "service unavailable"). One of those in the morning
+# aborted the whole sync. _retry wraps each Sheets API call and retries a
+# transient failure with exponential backoff (2s, 4s, 8s, 16s) before giving up,
+# so a momentary Google hiccup no longer breaks the run.
+# --------------------------------------------------------------------------
+_TRANSIENT = {429, 500, 502, 503, 504}
+
+
+def _status_of(err):
+    """Best-effort HTTP status from a gspread APIError."""
+    try:
+        return err.response.status_code
+    except Exception:
+        m = re.search(r"\[(\d{3})\]", str(err))
+        return int(m.group(1)) if m else None
+
+
+def _retry(fn, *args, _tries=5, _base=2.0, **kwargs):
+    for attempt in range(_tries):
+        try:
+            return fn(*args, **kwargs)
+        except APIError as e:
+            if _status_of(e) in _TRANSIENT and attempt < _tries - 1:
+                wait = _base * (2 ** attempt)
+                print(f"  … Sheets API transient error ({_status_of(e)}); "
+                      f"retry {attempt + 1}/{_tries - 1} in {wait:.0f}s")
+                time.sleep(wait)
+                continue
+            raise
 
 
 # ---- formatters ----------------------------------------------------------
@@ -98,8 +134,8 @@ def _merge(sheet_id, header_row, records, actual_cols, key_col=1, type_col=None)
     Existing row with the same date -> update only the given cells.
     No match -> append a new row (date + type + actuals), planning cells blank.
     """
-    ws = gc.open_by_key(sheet_id).sheet1
-    grid = ws.get_all_values()
+    ws = _retry(lambda: gc.open_by_key(sheet_id).sheet1)
+    grid = _retry(ws.get_all_values)
 
     # map date -> list of row numbers (1-based) among data rows
     date_rows = {}
@@ -135,9 +171,10 @@ def _merge(sheet_id, header_row, records, actual_cols, key_col=1, type_col=None)
             appends.append(new)
 
     if batch:
-        ws.batch_update(batch, value_input_option="USER_ENTERED")
+        _retry(ws.batch_update, batch, value_input_option="USER_ENTERED")
     if appends:
-        ws.update(
+        _retry(
+            ws.update,
             range_name=f"A{next_row}",
             values=appends,
             value_input_option="USER_ENTERED",
