@@ -289,7 +289,13 @@ def scheduled_index(client, months):
                 continue
             wid, date, sid = it.get("workoutId"), it.get("date"), it.get("id")
             if wid and date and sid is not None:
-                idx.setdefault((date, str(wid)), []).append(sid)
+                # A month view includes the boundary week's adjacent-month days,
+                # so scanning several months lists the same schedule twice. Keep
+                # each scheduleId ONCE per (date, workout) — otherwise dedupe
+                # would treat a lone workout as a duplicate and delete it.
+                lst = idx.setdefault((date, str(wid)), [])
+                if sid not in lst:
+                    lst.append(sid)
     return idx
 
 
