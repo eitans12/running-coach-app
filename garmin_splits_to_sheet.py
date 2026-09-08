@@ -94,8 +94,13 @@ def _lap_rows(start_date, title, laps):
 
 
 def main():
-    client = Garmin(os.environ["GARMIN_EMAIL"], os.environ["GARMIN_PASSWORD"])
-    client.login()
+    # Reuse the session saved by the earlier Garmin->Supabase step (same runner,
+    # same tokenstore path). login(tokenstore) restores those tokens and skips a
+    # second SSO login, so this step no longer adds Garmin 429 rate-limit risk.
+    # If no saved session exists it falls back to a normal credential login.
+    tokenstore = os.environ.get("GARMINTOKENS") or os.path.expanduser("~/.garminconnect")
+    client = Garmin(os.environ.get("GARMIN_EMAIL", ""), os.environ.get("GARMIN_PASSWORD", ""))
+    client.login(tokenstore)
 
     creds = Credentials.from_service_account_file(
         "google_credentials.json",

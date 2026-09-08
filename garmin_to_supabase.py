@@ -147,8 +147,14 @@ def sync_daily_metrics(client: Garmin):
 
 
 def main():
+    # A shared token store so the later splits step can REUSE this session
+    # instead of logging in to Garmin a second time. login(tokenstore) does a
+    # credential login the first time and auto-saves the tokens to this path;
+    # the splits step then restores them and skips the SSO login (which is what
+    # Garmin rate-limits with 429 / Cloudflare 403 when hit too often).
+    tokenstore = os.environ.get("GARMINTOKENS") or os.path.expanduser("~/.garminconnect")
     client = Garmin(os.environ["GARMIN_EMAIL"], os.environ["GARMIN_PASSWORD"])
-    client.login()
+    client.login(tokenstore)
     sync_activities(client)
     sync_daily_metrics(client)
     print("Garmin -> Supabase sync complete.")
