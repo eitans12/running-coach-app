@@ -9,11 +9,23 @@ name: running-coach-sync
 
 on:
   schedule:
-    # UTC 06:00,11:00,16:00 -> 09:00, 14:00, 19:00 Israel time.
-    # The 09:00 run is the anchor: recovery metrics (HRV, sleep, RHR) are only
-    # reliable after you wake and the watch has synced the night, so we capture
-    # them at 9am; the daytime runs pick up any runs you do.
-    - cron: "0 6,11,16 * * *"
+    # All times UTC. Israel = UTC+3, so:
+    #   06:00 / 06:30 / 07:00 UTC  ->  09:00 / 09:30 / 10:00 Israel  (MORNING)
+    #   11:00 UTC                  ->  14:00 Israel                  (afternoon)
+    #   16:00 UTC                  ->  19:00 Israel                  (evening)
+    #
+    # The 09:00 morning run is the anchor: recovery metrics (HRV, sleep, RHR)
+    # are only reliable after you wake and the watch has synced the night.
+    # GitHub's scheduler is best-effort and regularly DELAYS or even DROPS a
+    # scheduled run - the 09:00 slot was skipped several mornings in a row - so
+    # we fire the morning THREE times (09:00, 09:30, 10:00 Israel). The whole
+    # sync is idempotent (it upserts by date), so a repeat run just refreshes
+    # the same rows and is completely harmless; the extra attempts only raise
+    # the odds that at least one actually lands in the morning.
+    - cron: "0 6 * * *"
+    - cron: "30 6 * * *"
+    - cron: "0 7 * * *"
+    - cron: "0 11,16 * * *"
   workflow_dispatch: {}          # lets you (or a phone shortcut) run it on demand
 
 jobs:
