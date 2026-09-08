@@ -887,8 +887,12 @@ def init_chat_session():
     # חישוב מגמה מהירה מתוך ה-coach_logs (ה-7 האחרונים)
     logs = supabase.table("coach_logs").select("*").eq("user_id", st.session_state.user.id).order("id", desc=True).limit(7).execute().data
     trend_msg = "אין מספיק נתונים לניתוח מגמה."
-    if len(logs) >= 3:
-        avg_feeling = sum(l['feeling'] for l in logs) / len(logs)
+    # רק שורות עם 'feeling' שהוזן ידנית בבוקר. שורות שנוצרו ע"י הסנכרון
+    # האוטומטי (HRV/שינה/דופק) מגיעות עם feeling=None, ו-sum על None קרס
+    # וחסם את ההתחברות — לכן מסננים None לפני החישוב.
+    feelings = [l["feeling"] for l in logs if l.get("feeling") is not None]
+    if len(feelings) >= 3:
+        avg_feeling = sum(feelings) / len(feelings)
         trend_msg = f"מגמת תחושה ב-7 ימים אחרונים: {avg_feeling:.1f}/10."
 
     # כאן נכנס הניתוח החכם
