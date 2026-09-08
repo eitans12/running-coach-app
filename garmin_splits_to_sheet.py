@@ -37,8 +37,29 @@ SPLITS_TAB = "פיצולים"
 SPLITS_DAYS = int(os.environ.get("SPLITS_DAYS", "21"))
 SPLITS_MAX_RUNS = int(os.environ.get("SPLITS_MAX_RUNS", "12"))
 
-HEADER = ['תאריך', 'ריצה', 'ק"מ #', 'מרחק (ק"מ)', 'קצב (לק"מ)',
+HEADER = ['תאריך', 'ריצה', 'ק"מ #', 'סוג שלב', 'מרחק (ק"מ)', 'קצב (לק"מ)',
           'דופק ממוצע', 'דופק מקס']
+
+# Garmin marks each lap with an authoritative intensityType (present for
+# structured/outdoor runs; absent/None for unstructured runs e.g. treadmill).
+# We translate ONLY Garmin's own value and leave the cell blank when Garmin
+# provides none — never a guess.
+INTENSITY_HE = {
+    "WARMUP": "חימום",
+    "COOLDOWN": "קירור",
+    "RECOVERY": "התאוששות",
+    "INTERVAL": "אינטרוול",
+    "REST": "מנוחה",
+    "ACTIVE": "פעיל",
+    "RUN": "ריצה",
+}
+
+
+def _phase(intensity_type):
+    if not intensity_type:
+        return ""
+    return INTENSITY_HE.get(str(intensity_type).upper(), str(intensity_type).title())
+
 
 _TRANSIENT = {429, 500, 502, 503, 504}
 
@@ -86,7 +107,8 @@ def _lap_rows(start_date, title, laps):
         max_hr = lap.get("maxHR")
         pace = _fmt_pace(dur / (dist_m / 1000.0)) if dist_m else ""
         rows.append([
-            start_date, title, i, round(dist_m / 1000.0, 2), pace,
+            start_date, title, i, _phase(lap.get("intensityType")),
+            round(dist_m / 1000.0, 2), pace,
             int(avg_hr) if avg_hr is not None else "",
             int(max_hr) if max_hr is not None else "",
         ])
@@ -138,17 +160,8 @@ def main():
         laps = splits.get("lapDTOs") or []
         if not laps:
             continue
-        # --- TEMP DEBUG: what does Garmin actually give per lap? ---
-        try:
-            print(f"DEBUG run '{title}' {start}: {len(laps)} laps; "
-                  f"first-lap keys = {sorted(laps[0].keys())}")
-            itypes = [lap.get("intensityType") for lap in laps]
-            print(f"DEBUG intensityType values = {itypes}")
-        except Exception as _e:
-            print(f"DEBUG could not introspect laps: {_e}")
-        # --- END TEMP DEBUG ---
         out.extend(_lap_rows(start, title, laps))
-        out.append(["", "", "", "", "", "", ""])   # blank line between runs
+        out.append([""] * len(HEADER))              # blank line between runs
         runs += 1
 
     _retry(ws.clear)
