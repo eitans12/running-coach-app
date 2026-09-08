@@ -166,6 +166,18 @@ def main():
 
     _retry(ws.clear)
     _retry(ws.update, range_name="A1", values=out, value_input_option="USER_ENTERED")
+
+    # The distance column (E) can inherit a stale time format from an earlier
+    # layout, which made a value like 0.4 km display as "09:36". Force it to a
+    # plain number so the coach reads real kilometers. Best-effort: never let a
+    # formatting hiccup discard the data we already wrote.
+    last = len(out)
+    try:
+        _retry(ws.format, f"E2:E{last}",
+               {"numberFormat": {"type": "NUMBER", "pattern": "0.00"}})
+    except Exception as e:
+        print(f"  (note: could not set distance column number format: {e})")
+
     print(f"splits: wrote {len(out) - 1} rows covering {runs} runs to tab '{SPLITS_TAB}'.")
 
 
