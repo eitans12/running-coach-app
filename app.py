@@ -10,6 +10,48 @@ import datetime
 import json
 import re
 import html
+import requests
+
+
+# --- כפתור "סנכרן עכשיו": מפעיל את ה-GitHub Action של הסנכרון על פי דרישה ---
+# הסנכרון (Garmin -> Supabase -> Sheets) רץ אוטומטית לפי לו"ז, אבל התזמון של
+# GitHub הוא best-effort ולפעמים מדלג על הבוקר. הכפתור הזה מריץ אותו מיד.
+# משתמש בטוקן fine-grained עם הרשאת Actions:read-and-write, השמור ב-Streamlit
+# secrets בשם GITHUB_SYNC_TOKEN. הטוקן לעולם לא נחשף למשתמש הקצה.
+GITHUB_REPO_SLUG = "eitans12/running-coach-app"
+GITHUB_SYNC_WORKFLOW = "sync.yml"
+
+
+def trigger_github_sync():
+    """מפעיל את workflow הסנכרון ב-GitHub Actions. מחזיר (הצלחה, הודעה)."""
+    try:
+        token = (st.secrets.get("GITHUB_SYNC_TOKEN") or "").strip()
+    except Exception:
+        token = ""
+    if not token:
+        return False, ("לא הוגדר טוקן סנכרון. יש להוסיף GITHUB_SYNC_TOKEN "
+                       "בהגדרות Streamlit (Settings → Secrets).")
+    try:
+        r = requests.post(
+            f"https://api.github.com/repos/{GITHUB_REPO_SLUG}"
+            f"/actions/workflows/{GITHUB_SYNC_WORKFLOW}/dispatches",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            json={"ref": "main"},
+            timeout=15,
+        )
+    except Exception as e:
+        return False, f"שגיאת רשת בהפעלת הסנכרון: {e}"
+    if r.status_code == 204:
+        return True, ("הסנכרון הופעל! הנתונים יימשכו מגרמין ויתעדכנו תוך "
+                      "כ-2 דקות. רענן את העמוד אחר כך כדי לראות את החדשים.")
+    if r.status_code in (401, 403):
+        return False, ("הטוקן נדחה (הרשאה). ודא שהטוקן פעיל ובעל הרשאת "
+                       f"Actions: Read and write. (קוד {r.status_code})")
+    return False, f"הפעלת הסנכרון נכשלה (קוד {r.status_code}). {r.text[:200]}"
 
 # --- עיצוב אפליקציית ספורט: פונט, פלטת צבעים וכרטיסים ---
 st.markdown("""
@@ -962,6 +1004,19 @@ with tab_chat:
 
 # -- 2: בוקר --
 with tab_morning:
+    st.markdown("#### 🔄 סנכרון נתונים מגרמין")
+    sc1, sc2 = st.columns([1, 2])
+    with sc1:
+        if st.button("🔄 סנכרן עכשיו", type="primary",
+                     use_container_width=True, key="sync_now_btn"):
+            with st.spinner("מפעיל סנכרון..."):
+                ok, sync_msg = trigger_github_sync()
+            (st.success if ok else st.error)(sync_msg)
+    with sc2:
+        st.caption("מושך את האימונים ונתוני ההתאוששות האחרונים מגרמין. "
+                   "לוקח כ-2 דקות — אחר כך רענן את העמוד כדי לראות את העדכונים.")
+    st.divider()
+
     with st.form("daily_form"):
         c1, c2, c3, c4 = st.columns(4)
         rhr = c1.number_input("דופק מנוחה", min_value=30, max_value=100, value=None, placeholder="לא סופק")
