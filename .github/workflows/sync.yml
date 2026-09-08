@@ -64,6 +64,10 @@ jobs:
         run: python supabase_to_sheets.py
 
       - name: Garmin per-km splits -> Sheet (for the coach)
+        # Best-effort extra: never let a splits hiccup fail the core sync or
+        # send a failure email. The important Garmin->Supabase->Sheets steps
+        # above have already run by this point.
+        continue-on-error: true
         env:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
