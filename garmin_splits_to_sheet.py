@@ -133,6 +133,15 @@ def main():
         laps = splits.get("lapDTOs") or []
         if not laps:
             continue
+        # --- TEMP DEBUG: what does Garmin actually give per lap? ---
+        try:
+            print(f"DEBUG run '{title}' {start}: {len(laps)} laps; "
+                  f"first-lap keys = {sorted(laps[0].keys())}")
+            itypes = [lap.get("intensityType") for lap in laps]
+            print(f"DEBUG intensityType values = {itypes}")
+        except Exception as _e:
+            print(f"DEBUG could not introspect laps: {_e}")
+        # --- END TEMP DEBUG ---
         out.extend(_lap_rows(start, title, laps))
         out.append(["", "", "", "", "", "", ""])   # blank line between runs
         runs += 1
