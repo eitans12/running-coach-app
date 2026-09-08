@@ -62,3 +62,9 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           APP_USER_ID: ${{ secrets.APP_USER_ID }}
         run: python supabase_to_sheets.py
+
+      - name: Garmin per-km splits -> Sheet (for the coach)
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+        run: python garmin_splits_to_sheet.py
