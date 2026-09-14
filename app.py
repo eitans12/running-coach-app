@@ -20,10 +20,15 @@ import requests
 # secrets בשם GITHUB_SYNC_TOKEN. הטוקן לעולם לא נחשף למשתמש הקצה.
 GITHUB_REPO_SLUG = "eitans12/running-coach-app"
 GITHUB_SYNC_WORKFLOW = "sync.yml"
+# push-workouts.yml דוחף אימונים מתוכננים (טבלת planned_workouts) אל יומן
+# גרמין קונקט בפועל. הוא רץ אוטומטית כל בוקר, אבל אחרי ששומרים תוכנית שבועית
+# חדשה (ראו push_plan_to_garmin_calendar) מפעילים אותו גם מיידית, כדי שהאימון
+# יופיע על השעון תוך דקה-שתיים ולא רק בריצה היומית הבאה.
+GITHUB_PUSH_WORKFLOW = "push-workouts.yml"
 
 
-def trigger_github_sync():
-    """מפעיל את workflow הסנכרון ב-GitHub Actions. מחזיר (הצלחה, הודעה)."""
+def trigger_github_workflow(workflow_file):
+    """מפעיל workflow נתון ב-GitHub Actions על פי דרישה. מחזיר (הצלחה, הודעה)."""
     try:
         token = (st.secrets.get("GITHUB_SYNC_TOKEN") or "").strip()
     except Exception:
@@ -34,7 +39,7 @@ def trigger_github_sync():
     try:
         r = requests.post(
             f"https://api.github.com/repos/{GITHUB_REPO_SLUG}"
-            f"/actions/workflows/{GITHUB_SYNC_WORKFLOW}/dispatches",
+            f"/actions/workflows/{workflow_file}/dispatches",
             headers={
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/vnd.github+json",
@@ -52,6 +57,10 @@ def trigger_github_sync():
         return False, ("הטוקן נדחה (הרשאה). ודא שהטוקן פעיל ובעל הרשאת "
                        f"Actions: Read and write. (קוד {r.status_code})")
     return False, f"הפעלת הסנכרון נכשלה (קוד {r.status_code}). {r.text[:200]}"
+
+
+def trigger_github_sync():
+    return trigger_github_workflow(GITHUB_SYNC_WORKFLOW)
 
 # --- עיצוב אפליקציית ספורט: פונט, פלטת צבעים וכרטיסים ---
 st.markdown("""
@@ -506,6 +515,14 @@ WEEKLY_PLAN_JSON_FORMAT = f"""
 8. יום מנוחה אמיתי - עדיין תחזיר עבורו אובייקט עם title: "מנוחה" (לא תשמיט את היום).
 9. אסור לעטוף את שבעת הימים בתוך מפתח נוסף (כמו "weekly_plan" או כל מפתח אחר) - האובייקט ברמה העליונה בתוך הבלוק חייב להיות ישירות שבעת הימים כמפתחות, ושום דבר אחר (לא weekly_volume_target_km, לא coaching_notes וכו').
 10. אסור להשתמש בשמות ימים באנגלית (Sunday/Monday/...) ואסור להוסיף תאריך למפתח (כמו "Friday_2026-07-10") - רק שמות הימים בעברית, באיות זהה בדיוק לרשימה שבסעיף 1.
+11. עבור כל יום ריצה בפועל (לא "מנוחה" ולא יום כוח) הוסף לאובייקט של אותו יום, בנוסף ל-title/goal/steps/paces, גם מפתח 'garmin_spec' - זהו המבנה שנשלח בפועל ליומן גרמין קונקט (מה שיופיע על השעון), בדיוק לפי הסכימה הזו:
+   {{"sport": "running", "name": "<שם קצר לאימון, תואם ל-title>", "steps": [ ... ]}}
+   כל איבר ב-steps הוא אחד מהשניים:
+   * שלב רגיל: {{"kind": "warmup" | "cooldown" | "interval" | "recovery" | "rest", "end": ["distance", מטרים] או ["time", שניות], "target": ["pace", "MM:SS איטי יותר", "MM:SS מהיר יותר"] או ["hr", דופק_מינימום, דופק_מקסימום]}} (target אופציונלי - השמט אם אין קצב/דופק ספציפי לשלב).
+   * קבוצת חזרות: {{"kind": "repeat", "iterations": מספר_חזרות, "steps": [<שלבים רגילים בלבד בפנים - בלי warmup/cooldown/repeat מקוננים>]}}
+12. חימום וקירור ב-garmin_spec הם תמיד שלבים נפרדים (kind warmup/cooldown), בהתאמה לכלל 5 למעלה.
+13. כל מספר ב-garmin_spec (מרחק/זמן/קצב/דופק) חייב להיות זהה במהותו למה שכתבת ב-steps/paces הטקסטואליים לאותו יום - זו לא החלטה נוספת, רק אותה החלטה במבנה שמכונה יכולה לשלוח לשעון.
+14. אם היום מנוחה, כוח, או שאינך בטוח במבנה המדויק (מרחקים/זמנים/קצבים קונקרטיים) - השמט את garmin_spec לגמרי מאותו יום. אל תמציא ערכים רק כדי למלא את השדה.
 """
 
 # --- פונקציות עזר ---
@@ -824,6 +841,75 @@ def _normalize_weekly_plan(raw_plan):
             normalized[hebrew_key] = val
     return normalized
 
+# --- דחיפת garmin_spec מהתוכנית השבועית אל יומן גרמין קונקט בפועל ---
+# planned_workouts היא אותה טבלה ש-garmin_workout_builder.py (workflow
+# push-workouts.yml) כבר קורא ממנה ודוחף לגרמין בהצלחה - כאן רק מוסיפים
+# אליה שורות מה-garmin_spec שהמאמן עצמו כתב, בלי לנחש/לבנות מבנה בעצמנו.
+_GARMIN_STEP_KINDS = {"warmup", "cooldown", "interval", "recovery", "rest"}
+
+def _valid_garmin_spec(spec):
+    """בדיקת-צורה בלבד (לא מנחשת תוכן) - מוודאת שה-spec תואם למבנה ש-
+    garmin_workout_builder.py מצפה לו, כדי שלא נדחוף JSON פגום לגרמין."""
+    def _step_ok(s):
+        if not isinstance(s, dict):
+            return False
+        if s.get("kind") == "repeat":
+            return (isinstance(s.get("iterations"), int) and isinstance(s.get("steps"), list)
+                    and bool(s["steps"]) and all(_step_ok(c) for c in s["steps"]))
+        return (s.get("kind") in _GARMIN_STEP_KINDS and isinstance(s.get("end"), list)
+                and len(s["end"]) == 2)
+    return (isinstance(spec, dict) and isinstance(spec.get("steps"), list) and spec["steps"]
+            and all(_step_ok(s) for s in spec["steps"]))
+
+def _date_for_hebrew_day(day_name):
+    """התאריך של השבוע הנוכחי (ראשון-שבת) עבור שם יום עברי; None אם כבר עבר -
+    כדי לא לתזמן אימון גרמין לתאריך שכבר חלף."""
+    try:
+        idx = hebrew_days.index(day_name)
+    except ValueError:
+        return None
+    today = datetime.date.today()
+    today_idx = (today.weekday() + 1) % 7  # אותה המרה כמו ב-today_hebrew_day למעלה
+    target = today + datetime.timedelta(days=idx - today_idx)
+    return target.isoformat() if target >= today else None
+
+def push_plan_to_garmin_calendar(new_plan):
+    """לכל יום בתוכנית עם garmin_spec תקין - שומר/מעדכן שורה ב-planned_workouts
+    עם תאריך השבוע הנוכחי, ואז מפעיל מיד את push-workouts.yml (במקום לחכות
+    לריצה האוטומטית הבאה). מחזיר כמה אימונים נשלחו לתור."""
+    if not isinstance(new_plan, dict):
+        return 0
+    user_id = st.session_state.user.id
+    pushed = 0
+    for day_name, day in new_plan.items():
+        if not isinstance(day, dict):
+            continue
+        spec = day.get("garmin_spec")
+        if not spec or not _valid_garmin_spec(spec):
+            continue
+        date_iso = _date_for_hebrew_day(day_name)
+        if not date_iso:
+            continue
+        spec = dict(spec)
+        spec.setdefault("name", day.get("title") or day_name)
+        spec.setdefault("sport", "running")
+        try:
+            row = {"user_id": user_id, "name": spec["name"], "scheduled_date": date_iso,
+                   "spec": spec, "status": "pending"}
+            existing = (supabase.table("planned_workouts").select("id")
+                        .eq("user_id", user_id).eq("scheduled_date", date_iso)
+                        .execute().data)
+            if existing:
+                supabase.table("planned_workouts").update(row).eq("id", existing[0]["id"]).execute()
+            else:
+                supabase.table("planned_workouts").insert(row).execute()
+            pushed += 1
+        except Exception as e:
+            print(f"planned_workouts upsert failed for {day_name}: {e}")
+    if pushed:
+        trigger_github_workflow(GITHUB_PUSH_WORKFLOW)
+    return pushed
+
 # פונקציה שמחלצת JSON מהתשובה של ה-AI ומעדכנת את הלוח
 def process_ai_response_for_plan(response_text):
     # regex סלחני יותר לגבי רווחים/שורות ריקות סביב הגדר - כדי שלא ניפול על
@@ -843,8 +929,11 @@ def process_ai_response_for_plan(response_text):
             supabase.table("profiles").update({"workout_preferences": json.dumps(user_prefs)}).eq("id", st.session_state.user.id).execute()
             st.session_state.profile_data["workout_preferences"] = json.dumps(user_prefs)
 
+            pushed = push_plan_to_garmin_calendar(new_plan)
+
             clean_text = re.sub(r'```json\s*.*?```', '', response_text, flags=re.DOTALL | re.IGNORECASE).strip()
-            st.toast("📅 המאמן עדכן את לוח האימונים בהצלחה!")
+            extra = f" 🏃 {pushed} אימונים בדרך ליומן גרמין קונקט (יופיעו על השעון תוך דקה-שתיים)." if pushed else ""
+            st.toast("📅 המאמן עדכן את לוח האימונים בהצלחה!" + extra)
             return clean_text
         except Exception as e:
             st.warning(f"לא ניתן היה לעדכן את לוח האימונים: {e}")
