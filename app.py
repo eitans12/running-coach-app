@@ -614,6 +614,7 @@ def coach_send(message_text):
             m = re.search(r"\b([45]\d\d)\b", detail)
             code = int(m.group(1)) if m else None
         low = detail.lower()
+        print(f"[coach_send DEBUG] code={code} detail={detail!r}")
         if code == 429 or any(k in low for k in ("resource_exhausted", "quota", "rate limit", "rate-limit")):
             return _CoachResponse(
                 "Coach Leo 😅 חרגנו כרגע מהמכסה של Gemini. בתוכנית החינמית המכסה משותפת לכל "
@@ -623,6 +624,7 @@ def coach_send(message_text):
             f"Coach Leo נתקל בבעיה זמנית מול שירות ה-AI (קוד {code or 'לא ידוע'}). נסו שוב עוד רגע."
         )
     except Exception as e:
+        print(f"[coach_send DEBUG] generic exception type={type(e)!r} detail={e!r}")
         return _CoachResponse(f"שגיאה בתקשורת עם המאמן: {e}")
 
 # --- ייבוא היסטוריית ריצות מקובץ CSV של גרמין ---
