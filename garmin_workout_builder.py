@@ -199,7 +199,7 @@ def _norm(s):
     return "".join(ch for ch in s if ch.isalnum())
 
 
-def find_workout_id(client, name):
+def find_workout_id(client, name, exact_only=False):
     """Return the Garmin workoutId of an existing workout matching `name`.
 
     Bank-sheet names and Garmin names don't always match exactly (the sheet
@@ -207,7 +207,15 @@ def find_workout_id(client, name):
     'אימון הפוגות: 5x400m (קצב 5:28)'). So match in three passes, most strict
     first: exact -> one contains the other -> normalized substring. Returns
     None only if nothing plausibly matches, so we don't reschedule the wrong
-    workout."""
+    workout.
+
+    exact_only=True skips the two fuzzy passes and only accepts an exact name
+    match. Use this for workouts we ourselves generate with a full spec every
+    time (the planned_workouts/coach-plan flow): those names are short and
+    generic on purpose (e.g. 'ריצה קלה Z2'), so the fuzzy 'one name contains
+    the other' pass can match them to an unrelated older workout that merely
+    shares that short prefix — silently reusing (and thus repeating) the
+    wrong workout on the calendar instead of creating the new one."""
     existing = _get(client, "/workout-service/workouts",
                     params={"start": 0, "limit": 200}) or []
     names = [((w or {}).get("workoutName") or "", (w or {}).get("workoutId"))
@@ -217,6 +225,8 @@ def find_workout_id(client, name):
     for wn, wid in names:
         if wn == name:
             return wid
+    if exact_only:
+        return None
     # 2) raw containment either direction
     for wn, wid in names:
         if wn and name and (name in wn or wn in name):
@@ -251,6 +261,24 @@ def _calendar_items(client, year, month0):
     """Calendar items for a month. month0 is 0-indexed (Jan=0 … Sep=8)."""
     data = _get(client, f"/calendar-service/year/{year}/month/{month0}") or {}
     return data.get("calendarItems", []) or []
+
+
+def _workouts_on_date(client, months, date_iso):
+    """[(workoutId, scheduleId), ...] currently on the calendar for date_iso —
+    used to spot (and clear) a stale/wrong workout left on a coach-plan date."""
+    out = []
+    for (y, m0) in months:
+        try:
+            items = _calendar_items(client, y, m0)
+        except Exception as e:
+            print(f"  ! calendar read failed for {y}-{m0 + 1}: {e}")
+            continue
+        for it in items:
+            if (it or {}).get("itemType") != "workout":
+                continue
+            if it.get("date") == date_iso:
+                out.append((it.get("workoutId"), it.get("id")))
+    return out
 
 
 def _months_for_dates(dates_iso):
@@ -332,17 +360,33 @@ def dedupe_calendar(client, months):
     return removed
 
 
-def push_workout(client, spec, date_iso=None):
+def push_workout(client, spec, date_iso=None, exact_only=False, replace_existing=False):
     """Ensure the workout exists in Garmin (create once), then — if a date is
     given — schedule THAT workout onto the calendar. Re-runnable without
-    creating duplicates: an existing workout is reused and just (re)scheduled."""
-    wid = find_workout_id(client, spec["name"])
+    creating duplicates: an existing workout is reused and just (re)scheduled.
+
+    exact_only: see find_workout_id — pass True for spec-driven callers so a
+    generic short name doesn't fuzzy-match an unrelated older workout.
+    replace_existing: if the calendar already has a DIFFERENT workout on
+    date_iso, remove it before scheduling this one. Use for the coach-plan
+    flow, where each date should hold exactly the one workout Spark planned
+    for it — never a stale/unrelated workout left over from a bad match."""
+    wid = find_workout_id(client, spec["name"], exact_only=exact_only)
     if wid:
         print(f"· exists: {spec['name']} (id {wid})")
     else:
         wid = create_workout(client, build_payload(spec))
         print(f"· created workout {wid}: {spec['name']}")
     if wid and date_iso:
+        if replace_existing:
+            y, m, _ = date_iso.split("-")
+            for other_wid, sid in _workouts_on_date(client, {(int(y), int(m) - 1)}, date_iso):
+                if str(other_wid) != str(wid) and sid is not None:
+                    try:
+                        _delete_schedule(client, sid)
+                        print(f"  removed stale calendar entry: wid {other_wid} on {date_iso} (schedule {sid})")
+                    except Exception as e:
+                        print(f"  ! could not remove stale schedule {sid} on {date_iso}: {e}")
         schedule_workout(client, wid, date_iso)
         print(f"  scheduled → {date_iso}")
     return wid
@@ -414,7 +458,7 @@ def sync_planned_to_garmin(client, sb, user_id):
         if r["status"] == "uploaded" and not date:
             continue
         try:
-            wid = push_workout(client, r["spec"], date)
+            wid = push_workout(client, r["spec"], date, exact_only=True, replace_existing=True)
             _mark(sb, r["id"],
                   status="scheduled" if date else "uploaded",   # date => on the calendar
                   garmin_workout_id=str(wid) if wid else r.get("garmin_workout_id"),
