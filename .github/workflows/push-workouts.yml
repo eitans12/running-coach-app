@@ -3,17 +3,22 @@
 # into Garmin, and schedule bank-sheet workouts onto the dates the coach
 # wrote in column F of the workout-bank Google Sheet.
 #
-# Runs automatically every morning, and can also be triggered by hand from
+# Runs automatically twice a day, and can also be triggered by hand from
 # the Actions tab. It writes to your real Garmin account, so it only ever
-# ADDS/RESCHEDULES workouts — it never deletes anything.
+# ADDS/RESCHEDULES workouts - it never deletes anything. Re-running is safe:
+# find_workout_id reuses existing workouts instead of duplicating them,
+# schedule_if_absent skips a date already booked, and dedupe_calendar
+# removes any leftover duplicates - so running this twice a day never
+# double-books a workout.
 
 name: push-workouts
 
 on:
   workflow_dispatch: {}
   schedule:
-    # 04:00 UTC daily — an hour after the pull sync (sync.yml runs 03:00 UTC)
+    # 04:00 and 16:00 UTC = 07:00 and 19:00 Israel.
     - cron: "0 4 * * *"
+    - cron: "0 16 * * *"
 
 jobs:
   push:
