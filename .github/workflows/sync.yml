@@ -18,7 +18,7 @@ on:
     - cron: "0 7 * * *"   # Runs at 10:00 Israel
     - cron: "0 8 * * *"   # Runs at 11:00 Israel
   workflow_dispatch: {}          # lets you (or a phone shortcut) run it on demand
-  jobs:
+jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
