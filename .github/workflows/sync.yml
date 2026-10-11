@@ -9,14 +9,18 @@ name: running-coach-sync
 
 on:
   schedule:
-    # All times UTC. Israel is UTC+3, so 07:00/08:00 UTC = 10:00/11:00 Israel.
+    # All times UTC. Israel is UTC+3, so 07:00-09:00 UTC = 10:00-12:00 Israel.
     #
-    # Runs twice each morning (10:00 and 11:00 Israel). The sync is
-    # idempotent (it upserts by date), so the second run just refreshes
-    # the same rows - completely harmless, and it's a safety net in case
-    # GitHub's best-effort scheduler delays or drops the 10:00 run.
-    - cron: "0 7 * * *"   # Runs at 10:00 Israel
-    - cron: "0 8 * * *"   # Runs at 11:00 Israel
+    # GitHub's scheduler is best-effort and can run a scheduled job hours
+    # late, so instead of one run at 10:00 we fire five times across the
+    # morning. The sync is idempotent (it upserts by date), so each extra
+    # run just refreshes the same rows - harmless - and only raises the
+    # odds that at least one lands close to when you actually check in.
+    - cron: "0 7 * * *"    # Runs at 10:00 Israel
+    - cron: "30 7 * * *"   # Runs at 10:30 Israel
+    - cron: "0 8 * * *"    # Runs at 11:00 Israel
+    - cron: "30 8 * * *"   # Runs at 11:30 Israel
+    - cron: "0 9 * * *"    # Runs at 12:00 Israel
   workflow_dispatch: {}          # lets you (or a phone shortcut) run it on demand
 jobs:
   sync:
