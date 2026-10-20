@@ -36,6 +36,18 @@ jobs:
       - name: Write Google service-account credentials
         run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > google_credentials.json
 
+      - name: Pull Spark's new plans from Google Calendar into Supabase
+        # Spark (the Gemini coach) writes new plans to Google Calendar; this
+        # step reads events with an embedded workout spec and upserts them
+        # into planned_workouts as status='pending', so the push step below
+        # picks them up automatically - no manual SQL needed.
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          APP_USER_ID: ${{ secrets.APP_USER_ID }}
+        run: python calendar_to_supabase.py
+
       - name: Push planned + bank-sheet workouts to Garmin
         env:
           GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
