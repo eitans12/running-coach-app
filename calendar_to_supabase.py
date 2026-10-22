@@ -51,7 +51,7 @@ _creds = Credentials.from_service_account_file(
     "google_credentials.json",
     scopes=["https://www.googleapis.com/auth/calendar.readonly"],
 )
-cal = build("calendar", "v3", credentials=_creds, cacheDiscovery=False)
+cal = build("calendar", "v3", credentials=_creds, cache_discovery=False)
 
 
 def _extract_spec(description):
