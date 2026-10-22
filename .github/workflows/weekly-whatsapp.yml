@@ -1,0 +1,51 @@
+# .github/workflows/weekly-whatsapp.yml
+#
+# Every Sunday: pull Spark's freshly-built weekly plan from Google Calendar
+# into Supabase, then send Ron a WhatsApp summary (day-by-day plan + an
+# estimated weekly kilometrage, no nutrition).
+#
+# Triggered by cron-job.org hitting workflow_dispatch (GitHub's own `schedule:`
+# trigger is unreliable - see push-workouts.yml / sync.yml for the same
+# pattern), a little after Spark's Sunday-morning auto-planning run.
+
+name: weekly-whatsapp
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Best-effort internal fallback only - the real trigger is cron-job.org.
+    # 07:00 UTC Sunday = 10:00 Israel.
+    - cron: "0 7 * * 0"
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-sync.txt
+
+      - name: Write Google service-account credentials
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > google_credentials.json
+
+      - name: Pull this week's plan from Google Calendar into Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          APP_USER_ID: ${{ secrets.APP_USER_ID }}
+        run: python calendar_to_supabase.py
+
+      - name: Send weekly plan to Ron on WhatsApp
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          APP_USER_ID: ${{ secrets.APP_USER_ID }}
+          GREEN_API_ID_INSTANCE: ${{ secrets.GREEN_API_ID_INSTANCE }}
+          GREEN_API_TOKEN_INSTANCE: ${{ secrets.GREEN_API_TOKEN_INSTANCE }}
+          RON_WHATSAPP_NUMBER: ${{ secrets.RON_WHATSAPP_NUMBER }}
+        run: python weekly_whatsapp_to_ron.py
