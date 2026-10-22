@@ -97,10 +97,23 @@ def _spec_distance_km(spec):
 _KIND_LABELS = {
     "warmup": "חימום",
     "cooldown": "קירור",
-    "interval": "חלק מרכזי",
+    # A plain (non-repeated) "interval" step is the workout's single continuous
+    # main effort (e.g. an easy/Zone-2 run) - labeled "ריצה עיקרית" so it never
+    # reads like a quality/repeat session. Repeat blocks get their own label
+    # (see _describe_repeat_step) based on whether they're strides or real
+    # interval reps, so two different segments in one workout (e.g. "easy
+    # base + strides") don't both show up as "חלק מרכזי" and look like a
+    # duplicated quality session.
+    "interval": "ריצה עיקרית",
     "recovery": "מנוחה",
     "easy": "ריצה קלה",
 }
+
+# A repeat block whose single work rep is this short/brief is strides
+# (מתגברות), not an interval/quality rep - labeled differently so it's never
+# confused with a real quality session like 4x1000m.
+_STRIDES_MAX_DISTANCE_M = 200
+_STRIDES_MAX_TIME_S = 30
 
 
 def _fmt_amount(end):
@@ -143,6 +156,26 @@ def _describe_plain_step(step):
     return f"{label}: {' '.join(parts)}" if parts else (label or None)
 
 
+def _is_strides_work(work):
+    """True if a repeat block's work rep is short enough to be strides
+    (מתגברות) rather than a real quality/interval rep."""
+    if not work:
+        return False
+    end = work.get("end") or []
+    if len(end) != 2:
+        return False
+    kind, value = end
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return False
+    if kind == "distance":
+        return value <= _STRIDES_MAX_DISTANCE_M
+    if kind == "time":
+        return value <= _STRIDES_MAX_TIME_S
+    return False
+
+
 def _describe_repeat_step(step):
     iterations = step.get("iterations", 1)
     inner = step.get("steps", []) or []
@@ -159,7 +192,9 @@ def _describe_repeat_step(step):
         rest_amount = _fmt_amount(rest.get("end"))
         rest_desc = f", מנוחה {rest_amount} בין חזרות" if rest_amount else ", עם מנוחה בין חזרות"
 
-    return f"חלק מרכזי: {iterations} × {work_desc}{rest_desc}"
+    label = "מתגברות" if _is_strides_work(work) else "חלק מרכזי"
+
+    return f"{label}: {iterations} × {work_desc}{rest_desc}"
 
 
 def _describe_workout(spec):
