@@ -14,10 +14,20 @@ Message format (fixed, do not change without checking with Eitan):
 
     יום ראשון: יום מנוחה
     יום שני: <workout name>
+       • חימום: ...
+       • חלק מרכזי: ...
+       • קירור: ...
     ...
     יום שבת: <workout name>
 
     קילומטראז' שבועי משוער: X ק"מ
+
+Every non-rest day includes a one-line-per-segment breakdown (warmup, main
+set, cooldown) built from the workout's ###GARMIN_SPEC### `steps`, each line
+stating the segment's distance/time AND its target pace or heart rate. A
+`repeat` segment ("N x work+rest") states the rep count, the work pace/HR,
+and the rest between reps. This detail requirement comes directly from
+Eitan - do not collapse it back to a bare workout name.
 
 Sending is via Green API (green-api.com) - it sends FROM Eitan's own linked
 WhatsApp number, so Ron does not need to opt in to anything.
@@ -84,6 +94,89 @@ def _spec_distance_km(spec):
     return total_m / 1000.0
 
 
+_KIND_LABELS = {
+    "warmup": "חימום",
+    "cooldown": "קירור",
+    "interval": "חלק מרכזי",
+    "recovery": "מנוחה",
+    "easy": "ריצה קלה",
+}
+
+
+def _fmt_amount(end):
+    """Format an ['distance', meters] or ['time', seconds] end condition."""
+    if not end or len(end) != 2:
+        return ""
+    kind, value = end
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if kind == "distance":
+        if value >= 1000:
+            km = value / 1000
+            km_str = f"{km:g}"
+            return f'{km_str} ק"מ'
+        return f"{int(value)} מ'"
+    if kind == "time":
+        seconds = int(value)
+        minutes, secs = divmod(seconds, 60)
+        return f"{minutes}:{secs:02d} דק'" if secs else f"{minutes} דק'"
+    return ""
+
+
+def _fmt_target(target):
+    """Format a ['pace', slow, fast] or ['hr', low, high] target."""
+    if not target or len(target) != 3:
+        return ""
+    kind, a, b = target
+    if kind == "pace":
+        return f'בקצב {a}-{b} דק\'/ק"מ'
+    if kind == "hr":
+        return f"בדופק {a}-{b} פעימות/דק'"
+    return ""
+
+
+def _describe_plain_step(step):
+    label = _KIND_LABELS.get(step.get("kind"), step.get("kind") or "")
+    parts = [p for p in [_fmt_amount(step.get("end")), _fmt_target(step.get("target"))] if p]
+    return f"{label}: {' '.join(parts)}" if parts else (label or None)
+
+
+def _describe_repeat_step(step):
+    iterations = step.get("iterations", 1)
+    inner = step.get("steps", []) or []
+    rest = next((s for s in inner if s.get("kind") == "recovery"), None)
+    work = next((s for s in inner if s is not rest), None)
+
+    work_parts = []
+    if work:
+        work_parts = [p for p in [_fmt_amount(work.get("end")), _fmt_target(work.get("target"))] if p]
+    work_desc = " ".join(work_parts) or "חזרה"
+
+    rest_desc = ""
+    if rest:
+        rest_amount = _fmt_amount(rest.get("end"))
+        rest_desc = f", מנוחה {rest_amount} בין חזרות" if rest_amount else ", עם מנוחה בין חזרות"
+
+    return f"חלק מרכזי: {iterations} × {work_desc}{rest_desc}"
+
+
+def _describe_workout(spec):
+    """Multi-line Hebrew breakdown (warmup / main set / cooldown) of a workout."""
+    if not spec or not isinstance(spec, dict):
+        return ""
+    lines = []
+    for step in spec.get("steps", []):
+        if step.get("kind") == "repeat":
+            lines.append(_describe_repeat_step(step))
+        else:
+            desc = _describe_plain_step(step)
+            if desc:
+                lines.append(desc)
+    return "\n".join(f"   • {line}" for line in lines)
+
+
 def fetch_week_rows(week_start):
     week_end = week_start + timedelta(days=6)
     rows = (
@@ -110,6 +203,9 @@ def build_message(week_start):
         day_label = HEBREW_DAY_NAMES[i]
         if row:
             lines.append(f"{day_label}: {row['name']}")
+            detail = _describe_workout(row.get("spec"))
+            if detail:
+                lines.append(detail)
             total_km += _spec_distance_km(row.get("spec"))
         else:
             lines.append(f"{day_label}: יום מנוחה")
