@@ -79,6 +79,8 @@ def fetch_calendar_workouts():
     time_min = now.isoformat()
     time_max = (now + timedelta(days=LOOKAHEAD_DAYS)).isoformat()
 
+    print(f"  [debug] CALENDAR_ID={CALENDAR_ID!r} time_min={time_min} time_max={time_max}")
+
     events, page_token = [], None
     while True:
         resp = cal.events().list(
@@ -93,6 +95,11 @@ def fetch_calendar_workouts():
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
+
+    print(f"  [debug] raw events returned by Calendar API: {len(events)}")
+    for ev in events:
+        print(f"  [debug]   - {_event_date(ev)} | {ev.get('summary')!r} | "
+              f"has_description={bool(ev.get('description'))}")
 
     workouts = []
     for ev in events:
