@@ -46,6 +46,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           APP_USER_ID: ${{ secrets.APP_USER_ID }}
+          CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
         run: python calendar_to_supabase.py
 
       - name: Push planned + bank-sheet workouts to Garmin
