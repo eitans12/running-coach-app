@@ -32,6 +32,13 @@ Eitan - do not collapse it back to a bare workout name.
 Sending is via Green API (green-api.com) - it sends FROM Eitan's own linked
 WhatsApp number, so Ron does not need to opt in to anything.
 
+Retry-safe: weekly-whatsapp.yml fires this script several times on Sunday
+(Spark's own planning run may not be done yet the first time or two). Before
+building anything, this script checks `weekly_whatsapp_log` for a row already
+recorded for this week_start, and exits immediately if one exists - so a
+retry after a successful send never re-sends Ron a duplicate message. After a
+successful send, it upserts that row.
+
 Install:  pip install supabase requests python-dateutil
 Env:      SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, APP_USER_ID
           GREEN_API_ID_INSTANCE, GREEN_API_TOKEN_INSTANCE
@@ -212,6 +219,25 @@ def _describe_workout(spec):
     return "\n".join(f"   • {line}" for line in lines)
 
 
+def already_sent(week_start):
+    rows = (
+        sb.table("weekly_whatsapp_log")
+        .select("sent_at")
+        .eq("user_id", USER_ID)
+        .eq("week_start", week_start.isoformat())
+        .execute()
+        .data
+    )
+    return bool(rows)
+
+
+def mark_sent(week_start):
+    sb.table("weekly_whatsapp_log").upsert({
+        "user_id": USER_ID,
+        "week_start": week_start.isoformat(),
+    }).execute()
+
+
 def fetch_week_rows(week_start):
     week_end = week_start + timedelta(days=6)
     rows = (
@@ -267,6 +293,12 @@ def send_whatsapp(message):
 
 def main():
     week_start = _week_start()
+
+    if already_sent(week_start):
+        print(f"Week of {week_start.isoformat()} - already sent earlier today/this week, "
+              "skipping (retry-safe, no duplicate).")
+        return
+
     message, rows_found = build_message(week_start)
     print(f"Week of {week_start.isoformat()} - {rows_found} planned_workouts rows found.")
     print("---- message ----")
@@ -274,9 +306,11 @@ def main():
     print("------------------")
     if rows_found == 0:
         print("No planned workouts found for this week yet - not sending "
-              "(Spark may not have finished planning / calendar sync hasn't run).")
+              "(Spark may not have finished planning / calendar sync hasn't run). "
+              "A later retry today will try again.")
         return
     send_whatsapp(message)
+    mark_sent(week_start)
     print("Sent to Ron.")
 
 
