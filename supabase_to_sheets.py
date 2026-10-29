@@ -14,7 +14,15 @@ Workouts sheet ("מאגר אימוני עבר ...") — header row 7:
     F actual-km | G duration | H pace | I avg-hr | J max-hr <- Garmin (fill)
     K target-hr-zone                                        <- Spark (leave)
     L cadence | M elevation | N aerobic-TE | O anaerobic-TE <- Garmin (fill)
-    P RPE | Q shoes                                         <- athlete (leave)
+    P RPE | Q shoes                                         <- athlete, via Spark
+
+P and Q are filled from run_history.rpe / .shoes, which calendar_to_supabase.py
+populates from a ###POST_RUN### block Spark writes to the day's Calendar
+event (Spark has no working direct write path into this Sheet - see
+gemini-spark-instructions). Treated as a fill-from-source column like the
+Garmin ones: this script only ever writes a cell when the source has a
+non-empty value, so the athlete (or Spark) can still edit these cells by hand
+in the Sheet without being overwritten by an empty sync.
 
 Recovery sheet ("מעקב התאוששות ...") — header row 8:
     A date                                                  <- key
@@ -202,10 +210,12 @@ def sync_workouts():
             13: r.get("elevation_gain_m"),                        # M elevation
             14: r.get("aerobic_te"),                              # N aerobic TE
             15: r.get("anaerobic_te"),                            # O anaerobic TE
+            16: r.get("rpe"),                                     # P RPE (from Spark via calendar)
+            17: r.get("shoes"),                                   # Q shoes (from Spark via calendar)
         }
         records.append((d, cells))
     upd, app = _merge(WORKOUTS_SHEET_ID, WORKOUTS_HEADER_ROW, records,
-                      actual_cols=[6, 7, 8, 9, 10, 12, 13, 14, 15], type_col=3)
+                      actual_cols=[6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17], type_col=3)
     print(f"workouts: {upd} cells updated in planned rows, {app} unplanned rows appended.")
 
 
