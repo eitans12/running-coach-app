@@ -7,15 +7,27 @@
 # Triggered by cron-job.org hitting workflow_dispatch (GitHub's own `schedule:`
 # trigger is unreliable - see push-workouts.yml / sync.yml for the same
 # pattern), a little after Spark's Sunday-morning auto-planning run.
+#
+# Spark's own planning run doesn't have a guaranteed finish time, so one
+# single Sunday-morning shot can (and did - run #11, 2026-10-25) land before
+# Spark has written the week to Calendar: weekly_whatsapp_to_ron.py then finds
+# 0 planned_workouts and skips sending entirely, with no further attempt that
+# day. To make this self-healing instead of a silent miss, GitHub's own
+# `schedule:` now fires every two hours through Sunday (not just once) as a
+# real retry loop, not just a best-effort fallback. weekly_whatsapp_to_ron.py
+# is retry-safe: it records a `weekly_whatsapp_log` row once it actually sends,
+# and every later run that day checks that first and exits immediately if
+# already sent - so these extra attempts can never double-send Ron.
 
 name: weekly-whatsapp
 
 on:
   workflow_dispatch: {}
   schedule:
-    # Best-effort internal fallback only - the real trigger is cron-job.org.
-    # 07:00 UTC Sunday = 10:00 Israel.
-    - cron: "0 7 * * 0"
+    # Retry loop, every 2h Sun 07:00-19:00 UTC = 10:00-22:00 Israel. Each run
+    # is a no-op (one cheap Supabase lookup) once a day's send has already
+    # gone out - see weekly_whatsapp_to_ron.py's already_sent() check.
+    - cron: "0 7,9,11,13,15,17,19 * * 0"
 
 jobs:
   send:
